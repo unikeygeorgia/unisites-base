@@ -11,7 +11,7 @@ export type Mail = {
     to: string;
 };
 export type MailSender = (mail: Mail) => Promise<void>;
-/** smsoffice.ge, as multicolor uses it: the number as 995XXXXXXXXX, the text as is. */
+/** smsoffice.ge (Georgia): the number as 995XXXXXXXXX, the text as is. */
 export declare function smsoffice({ apiKey, fetcher, sender, }: {
     apiKey: string;
     fetcher?: typeof fetch;

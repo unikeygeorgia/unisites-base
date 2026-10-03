@@ -3,7 +3,7 @@
  * its own function of the same shape; the text is base's (messages.ts) or
  * the project's own.
  */
-/** smsoffice.ge, as multicolor uses it: the number as 995XXXXXXXXX, the text as is. */
+/** smsoffice.ge (Georgia): the number as 995XXXXXXXXX, the text as is. */
 export function smsoffice({ apiKey, fetcher = fetch, sender, }) {
     return async (to, text) => {
         const body = new URLSearchParams({

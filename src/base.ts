@@ -26,7 +26,7 @@ import type { MailSender, SmsSender } from "./senders.ts";
 export type BaseConfig = {
   /** The name people see in SMS and mail: "Multicolor". */
   app: string;
-  /** Where the project answers, "https://multicolor.ge"; sign-in lives at /api/auth. */
+  /** Where the project answers, "https://myshop.ge"; sign-in lives at /api/auth. */
   baseURL: string;
   /** The project's D1 (env.DB); Node's DatabaseSync in tests. */
   database: BetterAuthOptions["database"];

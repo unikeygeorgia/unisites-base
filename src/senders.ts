@@ -9,7 +9,7 @@ export type SmsSender = (to: string, text: string) => Promise<void>;
 export type Mail = { html: string; subject: string; text: string; to: string };
 export type MailSender = (mail: Mail) => Promise<void>;
 
-/** smsoffice.ge, as multicolor uses it: the number as 995XXXXXXXXX, the text as is. */
+/** smsoffice.ge (Georgia): the number as 995XXXXXXXXX, the text as is. */
 export function smsoffice({
   apiKey,
   fetcher = fetch,
