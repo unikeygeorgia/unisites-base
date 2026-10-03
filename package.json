@@ -1,0 +1,29 @@
+{
+  "name": "unisites-base",
+  "version": "0.1.0",
+  "description": "Sign-in and mail for a Unisites project's own Worker and D1 (unisites ADR 0021, 0022).",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "files": ["dist", "migrations", "bin"],
+  "bin": { "unisites-base": "bin/unisites-base.mjs" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit && vitest run && npm run build",
+    "test": "vitest run",
+    "migrations": "node --experimental-strip-types scripts/migrations.ts"
+  },
+  "dependencies": {
+    "bcryptjs": "3.0.3",
+    "better-auth": "1.7.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4",
+    "@types/node": "^24",
+    "typescript": "^5.9",
+    "vitest": "^4"
+  },
+  "engines": { "node": ">=22.5" }
+}
