@@ -11,15 +11,17 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 - **Cookie:** `__Host-base.session_token`, HttpOnly, Secure, SameSite=Lax.
 - **Old passwords:** bcrypt hashes (as Supabase Auth keeps them) still sign in, and are written again
   as scrypt the first time they do.
-- **Protection:** rate limits in D1 by IP, Turnstile when its secret is set, breached passwords
-  refused (haveibeenpwned), a second factor (TOTP) for those who turn it on.
+- **Protection:** rate limits in D1 by IP, strict where a request costs money or guesses a secret
+  (3 SMS codes a minute; `RATE_RULES`), Turnstile when its secret is set, breached passwords refused
+  (haveibeenpwned), a second factor (TOTP) for those who turn it on, a signing secret of 32+
+  characters or no start, and no mail ever sent to a phone-only account's placeholder address.
 - **Every sign-in** is written to `_base_sign_in`: who, when, from where, how.
 - **Language:** SMS and mail in Georgian or English, the person's own.
 
 ## Use
 
 ```bash
-npm install github:unikeygeorgia/unisites-base#v0.1.0
+npm install github:unikeygeorgia/unisites-base#v0.1.0   # a tag; the lockfile pins its commit
 npx unisites-base migrations          # copies base_0001.sql into ./migrations
 ```
 
@@ -31,13 +33,13 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/auth/")) {
       const base = createBase({
-        app: "Multicolor",
+        app: "My Shop",
         baseURL: url.origin,
         database: env.DB,
         secret: env.BASE_SECRET,
         locale: localeOf(request),
-        sms: smsoffice({ apiKey: env.SMSOFFICE_API_KEY, sender: "Multicolor" }),
-        mail: resend({ apiKey: env.RESEND_API_KEY, from: "Multicolor <no-reply@multicolor.ge>" }),
+        sms: smsoffice({ apiKey: env.SMSOFFICE_API_KEY, sender: "MyShop" }),
+        mail: resend({ apiKey: env.RESEND_API_KEY, from: "My Shop <no-reply@myshop.ge>" }),
         google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET },
         turnstileSecret: env.TURNSTILE_SECRET,
         waitUntil: (p) => ctx.waitUntil(p),
@@ -61,3 +63,8 @@ npm run migrations     # after raising better-auth: rewrites migrations/base_000
 ```
 
 `dist/` is committed: a project installs a tag straight from GitHub, without a build.
+
+## Security
+
+better-auth is pinned to an exact version, and only the plugins listed above are used (no SSO, SCIM,
+OAuth server or OAuth proxy). Report a vulnerability privately: see [SECURITY.md](SECURITY.md).

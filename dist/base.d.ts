@@ -65,6 +65,41 @@ export declare const TABLES: {
     readonly user: "_base_user";
     readonly verification: "_base_verification";
 };
+/**
+ * Stricter limits where a request costs money or guesses a secret, per IP
+ * (window in seconds, requests in it). An SMS is paid for: a script that
+ * asks for codes to many numbers ("SMS pumping") must hit a wall fast.
+ */
+export declare const RATE_RULES: {
+    readonly "/email-otp/send-verification-otp": {
+        readonly max: 3;
+        readonly window: 60;
+    };
+    readonly "/phone-number/send-otp": {
+        readonly max: 3;
+        readonly window: 60;
+    };
+    readonly "/phone-number/verify": {
+        readonly max: 10;
+        readonly window: 60;
+    };
+    readonly "/request-password-reset": {
+        readonly max: 3;
+        readonly window: 60;
+    };
+    readonly "/sign-in/email": {
+        readonly max: 5;
+        readonly window: 60;
+    };
+    readonly "/sign-in/email-otp": {
+        readonly max: 10;
+        readonly window: 60;
+    };
+    readonly "/sign-up/email": {
+        readonly max: 5;
+        readonly window: 60;
+    };
+};
 export declare function baseOptions(config: BaseConfig): {
     account: {
         modelName: "_base_account";
@@ -116,9 +151,41 @@ export declare function baseOptions(config: BaseConfig): {
     };
     plugins: BetterAuthPlugin[];
     rateLimit: {
+        customRules: {
+            "/email-otp/send-verification-otp": {
+                readonly max: 3;
+                readonly window: 60;
+            };
+            "/phone-number/send-otp": {
+                readonly max: 3;
+                readonly window: 60;
+            };
+            "/phone-number/verify": {
+                readonly max: 10;
+                readonly window: 60;
+            };
+            "/request-password-reset": {
+                readonly max: 3;
+                readonly window: 60;
+            };
+            "/sign-in/email": {
+                readonly max: 5;
+                readonly window: 60;
+            };
+            "/sign-in/email-otp": {
+                readonly max: 10;
+                readonly window: 60;
+            };
+            "/sign-up/email": {
+                readonly max: 5;
+                readonly window: 60;
+            };
+        };
         enabled: true;
+        max: number;
         modelName: "_base_rate_limit";
         storage: "database";
+        window: number;
     };
     secret: string;
     session: {
@@ -187,9 +254,41 @@ export declare function createBase(config: BaseConfig): {
         };
         plugins: BetterAuthPlugin[];
         rateLimit: {
+            customRules: {
+                "/email-otp/send-verification-otp": {
+                    readonly max: 3;
+                    readonly window: 60;
+                };
+                "/phone-number/send-otp": {
+                    readonly max: 3;
+                    readonly window: 60;
+                };
+                "/phone-number/verify": {
+                    readonly max: 10;
+                    readonly window: 60;
+                };
+                "/request-password-reset": {
+                    readonly max: 3;
+                    readonly window: 60;
+                };
+                "/sign-in/email": {
+                    readonly max: 5;
+                    readonly window: 60;
+                };
+                "/sign-in/email-otp": {
+                    readonly max: 10;
+                    readonly window: 60;
+                };
+                "/sign-up/email": {
+                    readonly max: 5;
+                    readonly window: 60;
+                };
+            };
             enabled: true;
+            max: number;
             modelName: "_base_rate_limit";
             storage: "database";
+            window: number;
         };
         secret: string;
         session: {

@@ -116,3 +116,29 @@ describe("Turnstile", () => {
     expect(p.sms).toEqual([]);
   });
 });
+
+describe("security", () => {
+  it("stops asking for SMS codes after 3 a minute from one address", async () => {
+    const p = project();
+    const statuses = [];
+    for (let i = 0; i < 5; i++) {
+      statuses.push((await p.call("/phone-number/send-otp", { phoneNumber: `+99555500010${i}` })).response.status);
+    }
+    expect(statuses).toEqual([200, 200, 200, 429, 429]);
+    expect(p.sms).toHaveLength(3);
+  });
+
+  it("never mails a phone-only account's placeholder address", async () => {
+    const p = project();
+    await p.call("/phone-number/send-otp", { phoneNumber: "+995555000200" });
+    await p.call("/phone-number/verify", { code: p.code(), phoneNumber: "+995555000200" });
+    p.forget();
+    await p.call("/request-password-reset", { email: "995555000200@phone.invalid", redirectTo: "/" });
+    await p.call("/email-otp/send-verification-otp", { email: "995555000200@phone.invalid", type: "sign-in" });
+    expect(p.mail).toEqual([]);
+  });
+
+  it("refuses to start with a short secret", () => {
+    expect(() => project({ secret: "short" })).toThrow(/at least 32 characters/);
+  });
+});

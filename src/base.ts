@@ -5,7 +5,7 @@ import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from
 
 import { MESSAGES, render, type Locale, type Messages } from "./messages.ts";
 import { isBcrypt, passwords } from "./passwords.ts";
-import { isE164, placeholderEmail } from "./phone.ts";
+import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
 
 /**
@@ -67,6 +67,21 @@ export const TABLES = {
   twoFactor: "_base_two_factor",
   user: "_base_user",
   verification: "_base_verification",
+} as const;
+
+/**
+ * Stricter limits where a request costs money or guesses a secret, per IP
+ * (window in seconds, requests in it). An SMS is paid for: a script that
+ * asks for codes to many numbers ("SMS pumping") must hit a wall fast.
+ */
+export const RATE_RULES = {
+  "/email-otp/send-verification-otp": { max: 3, window: 60 },
+  "/phone-number/send-otp": { max: 3, window: 60 },
+  "/phone-number/verify": { max: 10, window: 60 },
+  "/request-password-reset": { max: 3, window: 60 },
+  "/sign-in/email": { max: 5, window: 60 },
+  "/sign-in/email-otp": { max: 10, window: 60 },
+  "/sign-up/email": { max: 5, window: 60 },
 } as const;
 
 /** Paths a person reaches to get in, guarded by Turnstile when it is on. */
@@ -147,6 +162,9 @@ function unisitesBase(): BetterAuthPlugin {
 }
 
 export function baseOptions(config: BaseConfig) {
+  if (!config.secret || config.secret.length < 32) {
+    throw new Error("unisites-base: the secret must be at least 32 characters (a Worker secret, BASE_SECRET)");
+  }
   const locale = config.locale ?? "ka";
   const say: Messages = { ...MESSAGES[locale], ...config.messages };
   const later = (what: string, send: () => Promise<void>) => {
@@ -156,7 +174,11 @@ export function baseOptions(config: BaseConfig) {
     if (config.waitUntil) config.waitUntil(sending);
     return config.waitUntil ? Promise.resolve() : sending;
   };
-  const mail = config.mail;
+  // A phone-only account's address is a placeholder: nothing is ever sent to it.
+  const send = config.mail;
+  const mail: MailSender | undefined = send
+    ? (letter) => (isPlaceholderEmail(letter.to) ? Promise.resolve() : send(letter))
+    : undefined;
   const sms = config.sms;
   const withPasswords = Boolean(mail) && config.passwords !== false;
 
@@ -229,7 +251,14 @@ export function baseOptions(config: BaseConfig) {
       },
     },
     plugins,
-    rateLimit: { enabled: true, modelName: TABLES.rateLimit, storage: "database" },
+    rateLimit: {
+      customRules: { ...RATE_RULES },
+      enabled: true,
+      max: 100,
+      modelName: TABLES.rateLimit,
+      storage: "database",
+      window: 60,
+    },
     secret: config.secret,
     session: { expiresIn: 60 * 60 * 24 * 30, modelName: TABLES.session, updateAge: 60 * 60 * 24 },
     socialProviders: social,
