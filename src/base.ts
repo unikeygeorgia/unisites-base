@@ -3,11 +3,23 @@ import { createAuthMiddleware } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from "better-auth/plugins";
 
-import { MESSAGES, render, type Locale, type Messages } from "./messages.ts";
+import { messagesFrom, render, type Locale, type Messages, type TemplateKind } from "./messages.ts";
 import { isBcrypt, passwords } from "./passwords.ts";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
-import { ALL_ON, noteCapabilities, readCapabilities, readSwitches, type SettingsDatabase, type Switches } from "./settings.ts";
+import {
+  ALL_ON,
+  logMessage,
+  noteCapabilities,
+  readCapabilities,
+  readSwitches,
+  readTemplates,
+  type LogLine,
+  type SettingsDatabase,
+  type Switches,
+  type Templates,
+  run,
+} from "./settings.ts";
 
 /**
  * A Unisites project's sign-in (ADR 0021, 0022): better-auth on the
@@ -59,6 +71,10 @@ export type BaseConfig = {
   onSendError?: (what: string, error: unknown) => void;
   /** The admin's switches (settings.ts); createBase reads them from the project's D1. */
   switches?: Switches;
+  /** The project's own templates (settings.ts); createBase reads them from the project's D1. */
+  templates?: Templates;
+  /** Keep every SMS and letter in _base_message_log (base_0003.sql). createBase turns it on when the table is there. */
+  log?: boolean;
 };
 
 /** What the code lets this project do, before the admin's switches. */
@@ -181,14 +197,24 @@ export function baseOptions(config: BaseConfig) {
     throw new Error("unisites-base: the secret must be at least 32 characters (a Worker secret, BASE_SECRET)");
   }
   const locale = config.locale ?? "ka";
-  const say: Messages = { ...MESSAGES[locale], ...config.messages };
-  const later = (what: string, send: () => Promise<void>) => {
-    const sending = send().catch((error: unknown) =>
-      (config.onSendError ?? ((w, e) => console.error(JSON.stringify({ error: String(e), message: `base: ${w} not sent` }))))(what, error),
+  // The project's own templates where it has them, base's where not, and the code's own last.
+  const say: Messages = { ...messagesFrom(locale, config.templates?.[locale]), ...config.messages };
+  const db = config.database as SettingsDatabase;
+  /** Sends after the answer (waitUntil), and writes the outcome to the log; a failure is said, never thrown. */
+  const later = (line: Omit<LogLine, "status" | "error">, send: () => Promise<void>) => {
+    const note = (status: LogLine["status"], error?: string) =>
+      config.log ? logMessage(db, { ...line, error: error ?? null, status }).catch(() => undefined) : Promise.resolve();
+    const sending = send().then(
+      () => note("sent"),
+      (error: unknown) => {
+        (config.onSendError ?? ((w, e) => console.error(JSON.stringify({ error: String(e), message: `base: ${w} not sent` }))))(line.kind, error);
+        return note("failed", error instanceof Error ? error.message : String(error));
+      },
     );
     if (config.waitUntil) config.waitUntil(sending);
     return config.waitUntil ? Promise.resolve() : sending;
   };
+  const letter = (kind: TemplateKind, to: string, purpose?: string) => ({ channel: "email" as const, kind, purpose: purpose ?? null, to });
   // A phone-only account's address is a placeholder: nothing is ever sent to it.
   const send = config.mail;
   const mail: MailSender | undefined = send
@@ -210,7 +236,7 @@ export function baseOptions(config: BaseConfig) {
         expiresIn: 300,
         otpLength: 6,
         phoneNumberValidator: isE164,
-        sendOTP: ({ code, phoneNumber: to }) => later("sms code", () => sms(to, say.smsCode({ app: config.app, code }))),
+        sendOTP: ({ code, phoneNumber: to }) => later({ channel: "sms", kind: "smsCode", to }, () => sms(to, say.smsCode({ app: config.app, code }))),
         signUpOnVerification:
           !signUp
             ? undefined
@@ -226,7 +252,7 @@ export function baseOptions(config: BaseConfig) {
         expiresIn: 300,
         otpLength: 6,
         sendVerificationOTP: ({ email, otp, type }) =>
-          later("email code", () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
+          later(letter("emailCode", email, type), () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
       }),
     );
   }
@@ -260,14 +286,14 @@ export function baseOptions(config: BaseConfig) {
       requireEmailVerification: true,
       resetPasswordTokenExpiresIn: 60 * 60,
       sendResetPassword: async ({ url, user }) => {
-        if (mail) await later("password reset", () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));
+        if (mail) await later(letter("resetPassword", user.email), () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));
       },
     },
     emailVerification: {
       autoSignInAfterVerification: true,
       sendOnSignUp: true,
       sendVerificationEmail: async ({ url, user }) => {
-        if (mail) await later("email confirmation", () => mail(render(say.confirmEmail({ app: config.app, url }), user.email)));
+        if (mail) await later(letter("confirmEmail", user.email), () => mail(render(say.confirmEmail({ app: config.app, url }), user.email)));
       },
     },
     plugins,
@@ -291,7 +317,8 @@ export function baseOptions(config: BaseConfig) {
 /** How long a Worker keeps the switches before reading them again. */
 export const SETTINGS_TTL_MS = 30_000;
 
-let remembered: { at: number; capabilities: string | null; switches: Switches } | null = null;
+type Remembered = { at: number; capabilities: string | null; log: boolean; switches: Switches; templates: Templates };
+let remembered: Remembered | null = null;
 
 /** Forget the switches read before (tests; a Worker forgets them after SETTINGS_TTL_MS). */
 export function forgetSettings(): void {
@@ -303,28 +330,47 @@ export function forgetSettings(): void {
  * what the code can do written beside them for the Unisites page. Before the
  * project has base_0002.sql, everything the code can do is on.
  */
-async function switchesFor(config: BaseConfig, now = Date.now()): Promise<Switches> {
-  if (config.switches) return config.switches;
-  if (remembered && now - remembered.at < SETTINGS_TTL_MS) return remembered.switches;
+async function settingsFor(config: BaseConfig, now = Date.now()): Promise<Pick<Remembered, "log" | "switches" | "templates">> {
+  if (remembered && now - remembered.at < SETTINGS_TTL_MS) return remembered;
   const db = config.database as SettingsDatabase;
+  const empty: Templates = { en: {}, ka: {} };
   try {
     const switches = await readSwitches(db);
+    const templates = await readTemplates(db);
     const known = remembered?.capabilities ?? (await readCapabilities(db));
     const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
-    remembered = { at: now, capabilities, switches };
-    return switches;
+    // The log once its table is there (base_0003.sql).
+    const log = await hasTable(db, "_base_message_log");
+    remembered = { at: now, capabilities, log, switches, templates };
   } catch {
     // No _base_settings yet: the code alone decides.
-    remembered = { at: now, capabilities: null, switches: ALL_ON };
-    return ALL_ON;
+    remembered = { at: now, capabilities: null, log: false, switches: ALL_ON, templates: empty };
+  }
+  return remembered;
+}
+
+async function hasTable(db: SettingsDatabase, name: string): Promise<boolean> {
+  try {
+    await run(db, `select 1 from "${name}" limit 1`, [], true);
+    return true;
+  } catch {
+    return false;
   }
 }
 
 export function createBase(config: BaseConfig) {
   baseOptions(config); // a wrong secret is said at once, not at the first request
-  const make = (switches: Switches) => betterAuth(baseOptions({ ...config, switches }));
+  const make = (settings: Pick<Remembered, "log" | "switches" | "templates">) =>
+    betterAuth(
+      baseOptions({
+        ...config,
+        log: config.log ?? settings.log,
+        switches: config.switches ?? settings.switches,
+        templates: config.templates ?? settings.templates,
+      }),
+    );
   let made: Promise<ReturnType<typeof make>> | null = null;
-  const auth = () => (made ??= switchesFor(config).then(make));
+  const auth = () => (made ??= settingsFor(config).then(make));
   return {
     /** better-auth, with the admin's switches applied. */
     auth,

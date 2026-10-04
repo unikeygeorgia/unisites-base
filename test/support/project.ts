@@ -9,7 +9,7 @@ export const ORIGIN = "https://shop.test";
 /** A project as a Worker has it: an empty D1 with base's migration, and senders that keep what they send. */
 export function project(
   config: Partial<BaseConfig> = {},
-  { migrations = ["base_0001.sql", "base_0002.sql"], switches = {} }: { migrations?: string[]; switches?: Record<string, boolean> } = {},
+  { migrations = ["base_0001.sql", "base_0002.sql", "base_0003.sql"], switches = {} }: { migrations?: string[]; switches?: Record<string, boolean> } = {},
 ) {
   forgetSettings();
   const db = new DatabaseSync(":memory:");

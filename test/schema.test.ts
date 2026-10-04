@@ -14,6 +14,11 @@ describe("the migration", () => {
     expect([...sql.matchAll(/create table "([^"]+)"/g)].map((m) => m[1])).toEqual(["_base_settings"]);
   });
 
+  it("keeps the message log in _base_message_log (base_0003.sql)", () => {
+    const sql = readFileSync(new URL("../migrations/base_0003.sql", import.meta.url), "utf8");
+    expect([...sql.matchAll(/create table "([^"]+)"/g)].map((m) => m[1])).toEqual(["_base_message_log"]);
+  });
+
   it("names every table _base_*", () => {
     const sql = readFileSync(new URL("../migrations/base_0001.sql", import.meta.url), "utf8");
     const tables = [...sql.matchAll(/create table "([^"]+)"/g)].map((m) => m[1]);

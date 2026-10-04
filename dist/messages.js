@@ -1,44 +1,57 @@
 /**
  * What base says to a person, in Georgian and in English (ADR 0021, point 5:
- * a template per language, the person's own). A project may replace any of
- * them; the Unisites "Email" page will keep its edits in the project's D1.
+ * a template per language, the person's own). Each text is a template with
+ * {{variables}}; the project's admin edits them on Unisites' "Mail" page,
+ * which keeps them in the project's D1 (_base_settings, template.<kind>.<locale>),
+ * and base falls back to these where nothing is saved.
  */
-const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-const ka = {
-    confirmEmail: ({ app, url }) => ({
-        body: `დაადასტურე, რომ ეს ელფოსტა შენია, და ${app}-ზე ანგარიში ჩაირთვება.`,
-        button: { label: "ელფოსტის დადასტურება", url },
-        subject: `${app}: ელფოსტის დადასტურება`,
-    }),
-    emailCode: ({ app, code, purpose }) => ({
-        body: `${CODE_PURPOSE.ka[purpose]}: ${code}\n\nკოდი 5 წუთი მოქმედებს. თუ ეს შენ არ გითხოვია, უბრალოდ არ გამოიყენო.`,
-        subject: `${app}: კოდი ${code}`,
-    }),
-    resetPassword: ({ app, url }) => ({
-        body: `ახალი პაროლისთვის გახსენი ბმული. ის 1 საათი მოქმედებს. თუ ეს შენ არ გითხოვია, პაროლი არ შეიცვლება.`,
-        button: { label: "ახალი პაროლი", url },
-        subject: `${app}: ახალი პაროლი`,
-    }),
-    smsCode: ({ app, code }) => `${app}: შენი კოდია ${code}. მოქმედებს 5 წუთი.`,
+export const LOCALES = ["ka", "en"];
+export const TEMPLATE_KINDS = ["confirmEmail", "resetPassword", "emailCode", "smsCode"];
+/** The variables each template may use, and those it must (a code letter without its code is useless). */
+export const VARIABLES = {
+    confirmEmail: { may: ["app"], must: [] },
+    emailCode: { may: ["app", "code", "purpose"], must: ["code"] },
+    resetPassword: { may: ["app"], must: [] },
+    smsCode: { may: ["app", "code"], must: ["code"] },
 };
-const en = {
-    confirmEmail: ({ app, url }) => ({
-        body: `Confirm that this email is yours, and your ${app} account is ready.`,
-        button: { label: "Confirm email", url },
-        subject: `${app}: confirm your email`,
-    }),
-    emailCode: ({ app, code, purpose }) => ({
-        body: `${CODE_PURPOSE.en[purpose]}: ${code}\n\nThe code works for 5 minutes. If you did not ask for it, just don't use it.`,
-        subject: `${app}: code ${code}`,
-    }),
-    resetPassword: ({ app, url }) => ({
-        body: `Open the link to set a new password. It works for 1 hour. If you did not ask for it, your password stays as it is.`,
-        button: { label: "Set a new password", url },
-        subject: `${app}: a new password`,
-    }),
-    smsCode: ({ app, code }) => `${app}: your code is ${code}. It works for 5 minutes.`,
+export const TEMPLATES = {
+    en: {
+        confirmEmail: {
+            body: "Confirm that this email is yours, and your {{app}} account is ready.",
+            button: "Confirm email",
+            subject: "{{app}}: confirm your email",
+        },
+        emailCode: {
+            body: "{{purpose}}: {{code}}\n\nThe code works for 5 minutes. If you did not ask for it, just don't use it.",
+            subject: "{{app}}: code {{code}}",
+        },
+        resetPassword: {
+            body: "Open the link to set a new password. It works for 1 hour. If you did not ask for it, your password stays as it is.",
+            button: "Set a new password",
+            subject: "{{app}}: a new password",
+        },
+        smsCode: { body: "{{app}}: your code is {{code}}. It works for 5 minutes." },
+    },
+    ka: {
+        confirmEmail: {
+            body: "დაადასტურე, რომ ეს ელფოსტა შენია, და {{app}}-ზე ანგარიში ჩაირთვება.",
+            button: "ელფოსტის დადასტურება",
+            subject: "{{app}}: ელფოსტის დადასტურება",
+        },
+        emailCode: {
+            body: "{{purpose}}: {{code}}\n\nკოდი 5 წუთი მოქმედებს. თუ ეს შენ არ გითხოვია, უბრალოდ არ გამოიყენო.",
+            subject: "{{app}}: კოდი {{code}}",
+        },
+        resetPassword: {
+            body: "ახალი პაროლისთვის გახსენი ბმული. ის 1 საათი მოქმედებს. თუ ეს შენ არ გითხოვია, პაროლი არ შეიცვლება.",
+            button: "ახალი პაროლი",
+            subject: "{{app}}: ახალი პაროლი",
+        },
+        smsCode: { body: "{{app}}: შენი კოდია {{code}}. მოქმედებს 5 წუთი." },
+    },
 };
-const CODE_PURPOSE = {
+/** What {{purpose}} reads as, by the code's purpose. */
+export const CODE_PURPOSE = {
     en: {
         "change-email": "Your code to change the email",
         "email-verification": "Your code to confirm the email",
@@ -52,7 +65,57 @@ const CODE_PURPOSE = {
         "sign-in": "შესვლის კოდი",
     },
 };
-export const MESSAGES = { en, ka };
+/** {{name}} replaced by its value; an unknown variable is left as it is. */
+export function fill(text, values) {
+    return text.replace(/\{\{\s*([a-z]+)\s*\}\}/g, (whole, name) => values[name] ?? whole);
+}
+/** What is wrong with a template, or nothing: the variables it may use, and those it must. */
+export function templateProblems(kind, template) {
+    const problems = [];
+    const text = [template.subject ?? "", template.body, template.button ?? ""].join("\n");
+    const used = [...text.matchAll(/\{\{\s*([a-z]+)\s*\}\}/g)].map((m) => m[1] ?? "");
+    const { may, must } = VARIABLES[kind];
+    for (const name of used)
+        if (!may.includes(name))
+            problems.push(`{{${name}}} is not a variable here`);
+    for (const name of must)
+        if (!used.includes(name))
+            problems.push(`{{${name}}} is missing`);
+    if (!template.body.trim())
+        problems.push("the text is empty");
+    if (kind !== "smsCode" && !template.subject?.trim())
+        problems.push("the subject is empty");
+    if ((kind === "confirmEmail" || kind === "resetPassword") && !template.button?.trim())
+        problems.push("the button is empty");
+    if (kind === "smsCode" && template.body.length > 300)
+        problems.push("an SMS this long is several SMS");
+    if (text.length > 5000)
+        problems.push("too long");
+    return problems;
+}
+/** The messages from a set of templates (a project's own, where it has them, base's elsewhere). */
+export function messagesFrom(locale, own = {}) {
+    const pick = (kind) => {
+        const mine = own[kind];
+        return mine && templateProblems(kind, mine).length === 0 ? mine : TEMPLATES[locale][kind];
+    };
+    const letter = (kind, values, url) => {
+        const t = pick(kind);
+        return {
+            body: fill(t.body, values),
+            ...(url && t.button ? { button: { label: fill(t.button, values), url } } : {}),
+            subject: fill(t.subject ?? "", values),
+        };
+    };
+    return {
+        confirmEmail: ({ app, url }) => letter("confirmEmail", { app }, url),
+        emailCode: ({ app, code, purpose }) => letter("emailCode", { app, code, purpose: CODE_PURPOSE[locale][purpose] }),
+        resetPassword: ({ app, url }) => letter("resetPassword", { app }, url),
+        smsCode: ({ app, code }) => fill(pick("smsCode").body, { app, code }),
+    };
+}
+export const MESSAGES = { en: messagesFrom("en"), ka: messagesFrom("ka") };
+const esc = (s) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 /** A letter as the mail sender takes it: plain text and simple, safe HTML. */
 export function render(letter, to) {
     const paragraphs = letter.body

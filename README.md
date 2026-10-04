@@ -17,6 +17,11 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
   characters or no start, and no mail ever sent to a phone-only account's placeholder address.
 - **Every sign-in** is written to `_base_sign_in`: who, when, from where, how.
 - **Language:** SMS and mail in Georgian or English, the person's own.
+- **Templates:** every SMS and letter is a template with `{{variables}}`, in Georgian and English;
+  the admin edits them on Unisites' "Mail" page (kept in `_base_settings`), and a broken one falls
+  back to base's own text. `unisites-base/messages` has the defaults and the checks, alone.
+- **Log:** every SMS and letter sent, or tried, in `_base_message_log` (`base_0003.sql`): when, to
+  whom, which, sent or failed with the reason; never the code or the text; kept 90 days.
 - **Mail senders:** SMTP from the project's own mailbox (DirectAdmin or cPanel, Zoho, Google
   Workspace, Unimail's mailboxes; 465 TLS or 587 STARTTLS, from a Worker's TCP socket), Resend, or
   your own function. `mailFromEnv(env)` picks the one Unisites set up as Worker secrets
@@ -30,7 +35,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.3.1.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.4.0.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 

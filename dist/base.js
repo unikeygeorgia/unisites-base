@@ -2,10 +2,10 @@ import { betterAuth } from "better-auth";
 import { createAuthMiddleware } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from "better-auth/plugins";
-import { MESSAGES, render } from "./messages.js";
+import { messagesFrom, render } from "./messages.js";
 import { isBcrypt, passwords } from "./passwords.js";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.js";
-import { ALL_ON, noteCapabilities, readCapabilities, readSwitches } from "./settings.js";
+import { ALL_ON, logMessage, noteCapabilities, readCapabilities, readSwitches, readTemplates, run, } from "./settings.js";
 /** What the code lets this project do, before the admin's switches. */
 export function capabilitiesOf(config) {
     return {
@@ -123,13 +123,21 @@ export function baseOptions(config) {
         throw new Error("unisites-base: the secret must be at least 32 characters (a Worker secret, BASE_SECRET)");
     }
     const locale = config.locale ?? "ka";
-    const say = { ...MESSAGES[locale], ...config.messages };
-    const later = (what, send) => {
-        const sending = send().catch((error) => (config.onSendError ?? ((w, e) => console.error(JSON.stringify({ error: String(e), message: `base: ${w} not sent` }))))(what, error));
+    // The project's own templates where it has them, base's where not, and the code's own last.
+    const say = { ...messagesFrom(locale, config.templates?.[locale]), ...config.messages };
+    const db = config.database;
+    /** Sends after the answer (waitUntil), and writes the outcome to the log; a failure is said, never thrown. */
+    const later = (line, send) => {
+        const note = (status, error) => config.log ? logMessage(db, { ...line, error: error ?? null, status }).catch(() => undefined) : Promise.resolve();
+        const sending = send().then(() => note("sent"), (error) => {
+            (config.onSendError ?? ((w, e) => console.error(JSON.stringify({ error: String(e), message: `base: ${w} not sent` }))))(line.kind, error);
+            return note("failed", error instanceof Error ? error.message : String(error));
+        });
         if (config.waitUntil)
             config.waitUntil(sending);
         return config.waitUntil ? Promise.resolve() : sending;
     };
+    const letter = (kind, to, purpose) => ({ channel: "email", kind, purpose: purpose ?? null, to });
     // A phone-only account's address is a placeholder: nothing is ever sent to it.
     const send = config.mail;
     const mail = send
@@ -149,7 +157,7 @@ export function baseOptions(config) {
             expiresIn: 300,
             otpLength: 6,
             phoneNumberValidator: isE164,
-            sendOTP: ({ code, phoneNumber: to }) => later("sms code", () => sms(to, say.smsCode({ app: config.app, code }))),
+            sendOTP: ({ code, phoneNumber: to }) => later({ channel: "sms", kind: "smsCode", to }, () => sms(to, say.smsCode({ app: config.app, code }))),
             signUpOnVerification: !signUp
                 ? undefined
                 : { getTempEmail: placeholderEmail, getTempName: (phone) => phone },
@@ -161,7 +169,7 @@ export function baseOptions(config) {
             disableSignUp: !signUp,
             expiresIn: 300,
             otpLength: 6,
-            sendVerificationOTP: ({ email, otp, type }) => later("email code", () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
+            sendVerificationOTP: ({ email, otp, type }) => later(letter("emailCode", email, type), () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
         }));
     }
     if (withPasswords && config.checkLeakedPasswords !== false)
@@ -196,7 +204,7 @@ export function baseOptions(config) {
             resetPasswordTokenExpiresIn: 60 * 60,
             sendResetPassword: async ({ url, user }) => {
                 if (mail)
-                    await later("password reset", () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));
+                    await later(letter("resetPassword", user.email), () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));
             },
         },
         emailVerification: {
@@ -204,7 +212,7 @@ export function baseOptions(config) {
             sendOnSignUp: true,
             sendVerificationEmail: async ({ url, user }) => {
                 if (mail)
-                    await later("email confirmation", () => mail(render(say.confirmEmail({ app: config.app, url }), user.email)));
+                    await later(letter("confirmEmail", user.email), () => mail(render(say.confirmEmail({ app: config.app, url }), user.email)));
             },
         },
         plugins,
@@ -236,30 +244,45 @@ export function forgetSettings() {
  * what the code can do written beside them for the Unisites page. Before the
  * project has base_0002.sql, everything the code can do is on.
  */
-async function switchesFor(config, now = Date.now()) {
-    if (config.switches)
-        return config.switches;
+async function settingsFor(config, now = Date.now()) {
     if (remembered && now - remembered.at < SETTINGS_TTL_MS)
-        return remembered.switches;
+        return remembered;
     const db = config.database;
+    const empty = { en: {}, ka: {} };
     try {
         const switches = await readSwitches(db);
+        const templates = await readTemplates(db);
         const known = remembered?.capabilities ?? (await readCapabilities(db));
         const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
-        remembered = { at: now, capabilities, switches };
-        return switches;
+        // The log once its table is there (base_0003.sql).
+        const log = await hasTable(db, "_base_message_log");
+        remembered = { at: now, capabilities, log, switches, templates };
     }
     catch {
         // No _base_settings yet: the code alone decides.
-        remembered = { at: now, capabilities: null, switches: ALL_ON };
-        return ALL_ON;
+        remembered = { at: now, capabilities: null, log: false, switches: ALL_ON, templates: empty };
+    }
+    return remembered;
+}
+async function hasTable(db, name) {
+    try {
+        await run(db, `select 1 from "${name}" limit 1`, [], true);
+        return true;
+    }
+    catch {
+        return false;
     }
 }
 export function createBase(config) {
     baseOptions(config); // a wrong secret is said at once, not at the first request
-    const make = (switches) => betterAuth(baseOptions({ ...config, switches }));
+    const make = (settings) => betterAuth(baseOptions({
+        ...config,
+        log: config.log ?? settings.log,
+        switches: config.switches ?? settings.switches,
+        templates: config.templates ?? settings.templates,
+    }));
     let made = null;
-    const auth = () => (made ??= switchesFor(config).then(make));
+    const auth = () => (made ??= settingsFor(config).then(make));
     return {
         /** better-auth, with the admin's switches applied. */
         auth,

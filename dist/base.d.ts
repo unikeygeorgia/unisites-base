@@ -1,7 +1,7 @@
 import { type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
 import { type Locale, type Messages } from "./messages.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
-import { type Switches } from "./settings.ts";
+import { type Switches, type Templates } from "./settings.ts";
 /**
  * A Unisites project's sign-in (ADR 0021, 0022): better-auth on the
  * project's own D1, in the project's own Worker. Its tables are _base_*
@@ -57,6 +57,10 @@ export type BaseConfig = {
     onSendError?: (what: string, error: unknown) => void;
     /** The admin's switches (settings.ts); createBase reads them from the project's D1. */
     switches?: Switches;
+    /** The project's own templates (settings.ts); createBase reads them from the project's D1. */
+    templates?: Templates;
+    /** Keep every SMS and letter in _base_message_log (base_0003.sql). createBase turns it on when the table is there. */
+    log?: boolean;
 };
 /** What the code lets this project do, before the admin's switches. */
 export declare function capabilitiesOf(config: BaseConfig): Switches;
