@@ -21,7 +21,8 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
   Workspace, Unimail's mailboxes; 465 TLS or 587 STARTTLS, from a Worker's TCP socket), Resend, or
   your own function. `mailFromEnv(env)` picks the one Unisites set up as Worker secrets
   (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_FROM`; or `RESEND_API_KEY`), so
-  the project's code does not change with the sender.
+  the project's code does not change with the sender. `unisites-base/smtp` is the SMTP client alone,
+  without better-auth (Unisites tests a mailbox with it before saving it).
 - **Switches:** the project's admin turns ways in (and sign-up) off and on from Unisites'
   "Sign-in methods" page, kept in `_base_settings`; a Worker reads them every 30 seconds. A switch
   only closes what the code can do; base writes what the code can do beside them for the page.
@@ -29,7 +30,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.3.0.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.3.1.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 
