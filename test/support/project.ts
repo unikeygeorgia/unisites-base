@@ -29,14 +29,15 @@ export function project(
     sms: async (to, text) => void sms.push({ text, to }),
     ...config,
   });
-  let cookie = "";
+  // A browser's cookie jar: every cookie set, gone when it is cleared.
+  const jar = new Map<string, string>();
   async function call(path: string, body?: unknown, headers: Record<string, string> = {}) {
     const response = await base.handler(
       new Request(`${ORIGIN}/api/auth${path}`, {
         body: body === undefined ? undefined : JSON.stringify(body),
         headers: {
           ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...(cookie ? { cookie } : {}),
+          ...(jar.size ? { cookie: [...jar].map(([k, v]) => `${k}=${v}`).join("; ") } : {}),
           "cf-connecting-ip": "203.0.113.7",
           origin: ORIGIN,
           ...headers,
@@ -45,15 +46,21 @@ export function project(
       }),
     );
     const set = response.headers.getSetCookie();
-    const token = set.find((c) => c.startsWith("__Host-base.session_token="));
-    if (token) cookie = token.split(";")[0];
+    for (const line of set) {
+      const [pair = ""] = line.split(";");
+      const at = pair.indexOf("=");
+      const name = pair.slice(0, at);
+      const value = pair.slice(at + 1);
+      if (/max-age=0/i.test(line) || value === "") jar.delete(name);
+      else jar.set(name, value);
+    }
     return { body: (await response.json().catch(() => null)) as { user?: Record<string, unknown> } | null, response, set };
   }
   return {
     base,
     call,
     db,
-    forget: () => void (cookie = ""),
+    forget: () => void jar.clear(),
     mail,
     sms,
     /** The newest code texted to a number. */
