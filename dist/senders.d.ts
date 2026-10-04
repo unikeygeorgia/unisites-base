@@ -24,3 +24,10 @@ export declare function resend({ apiKey, fetcher, from, replyTo, }: {
     from: string;
     replyTo?: string;
 }): MailSender;
+/**
+ * The mail sender Unisites set up for the project, from its Worker's secrets
+ * (ADR 0021, point 5), so the project's code does not change when the sender
+ * does: SMTP when SMTP_HOST is set, else Resend when RESEND_API_KEY is, else
+ * none. The address mail comes from is MAIL_FROM (or EMAIL_FROM).
+ */
+export declare function mailFromEnv(env: Record<string, unknown>): MailSender | undefined;
