@@ -1,7 +1,7 @@
 import { type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
 import { type Locale, type Messages } from "./messages.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
-import { type Switches, type Templates } from "./settings.ts";
+import { type Notices, type Switches, type Templates } from "./settings.ts";
 /**
  * A Unisites project's sign-in (ADR 0021, 0022): better-auth on the
  * project's own D1, in the project's own Worker. Its tables are _base_*
@@ -61,6 +61,8 @@ export type BaseConfig = {
     templates?: Templates;
     /** Keep every SMS and letter in _base_message_log (base_0003.sql). createBase turns it on when the table is there. */
     log?: boolean;
+    /** Which security notices go out (settings.ts); createBase reads them from the project's D1. */
+    notices?: Notices;
 };
 /** What the code lets this project do, before the admin's switches. */
 export declare function capabilitiesOf(config: BaseConfig): Switches;
@@ -109,6 +111,8 @@ export declare const RATE_RULES: {
         readonly window: 60;
     };
 };
+/** "Safari, macOS"-ish, from a user agent, for a notice. */
+export declare function deviceOf(agent: string | null | undefined): string;
 export declare function baseOptions(config: BaseConfig): {
     account: {
         modelName: "_base_account";
@@ -143,6 +147,10 @@ export declare function baseOptions(config: BaseConfig): {
         };
         requireEmailVerification: true;
         resetPasswordTokenExpiresIn: number;
+        revokeSessionsOnPasswordReset: true;
+        onPasswordReset: ({ user }: {
+            user: import("better-auth").User;
+        }) => Promise<void>;
         sendResetPassword: ({ url, user }: {
             user: import("better-auth").User;
             url: string;
@@ -251,6 +259,10 @@ export declare function createBase(config: BaseConfig): {
             };
             requireEmailVerification: true;
             resetPasswordTokenExpiresIn: number;
+            revokeSessionsOnPasswordReset: true;
+            onPasswordReset: ({ user }: {
+                user: import("better-auth").User;
+            }) => Promise<void>;
             sendResetPassword: ({ url, user }: {
                 user: import("better-auth").User;
                 url: string;

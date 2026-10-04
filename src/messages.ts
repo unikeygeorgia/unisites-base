@@ -21,10 +21,28 @@ export type Messages = {
   confirmEmail: (v: { app: string; url: string }) => Letter;
   /** The link that sets a new password. */
   resetPassword: (v: { app: string; url: string }) => Letter;
+  /** A security notice: the password was changed. */
+  passwordChanged: (v: { app: string; when: string }) => Letter;
+  /** A security notice: a sign-in from a device not seen before. */
+  newSignIn: (v: { app: string; when: string; device: string }) => Letter;
+  /** A security notice: the second factor was turned off. */
+  twoFactorDisabled: (v: { app: string; when: string }) => Letter;
 };
 
 export type TemplateKind = keyof Messages;
-export const TEMPLATE_KINDS: TemplateKind[] = ["confirmEmail", "resetPassword", "emailCode", "smsCode"];
+export const TEMPLATE_KINDS: TemplateKind[] = [
+  "confirmEmail",
+  "resetPassword",
+  "emailCode",
+  "smsCode",
+  "passwordChanged",
+  "newSignIn",
+  "twoFactorDisabled",
+];
+
+/** The security notices, each with its own switch on Unisites. */
+export type NoticeKind = "passwordChanged" | "newSignIn" | "twoFactorDisabled";
+export const NOTICE_KINDS: NoticeKind[] = ["passwordChanged", "newSignIn", "twoFactorDisabled"];
 
 /** A template: an SMS has a body only; a letter a subject, a body, and for a link a button's label. */
 export type Template = { body: string; button?: string; subject?: string };
@@ -35,6 +53,9 @@ export const VARIABLES: Record<TemplateKind, { may: string[]; must: string[] }> 
   emailCode: { may: ["app", "code", "purpose"], must: ["code"] },
   resetPassword: { may: ["app"], must: [] },
   smsCode: { may: ["app", "code"], must: ["code"] },
+  passwordChanged: { may: ["app", "when"], must: [] },
+  newSignIn: { may: ["app", "when", "device"], must: [] },
+  twoFactorDisabled: { may: ["app", "when"], must: [] },
 };
 
 export const TEMPLATES: Record<Locale, Record<TemplateKind, Template>> = {
@@ -54,6 +75,18 @@ export const TEMPLATES: Record<Locale, Record<TemplateKind, Template>> = {
       subject: "{{app}}: a new password",
     },
     smsCode: { body: "{{app}}: your code is {{code}}. It works for 5 minutes." },
+    passwordChanged: {
+      body: "The password of your {{app}} account was changed: {{when}}.\n\nIf it was not you, set a new password at once with \"Forgot password\" and tell us.",
+      subject: "{{app}}: your password was changed",
+    },
+    newSignIn: {
+      body: "Someone signed in to your {{app}} account from a new device: {{device}}, {{when}}.\n\nIf it was you, there is nothing to do. If not, change your password at once.",
+      subject: "{{app}}: a sign-in from a new device",
+    },
+    twoFactorDisabled: {
+      body: "Two-factor sign-in was turned off for your {{app}} account: {{when}}.\n\nIf it was not you, change your password at once and turn it back on.",
+      subject: "{{app}}: two-factor sign-in was turned off",
+    },
   },
   ka: {
     confirmEmail: {
@@ -71,6 +104,18 @@ export const TEMPLATES: Record<Locale, Record<TemplateKind, Template>> = {
       subject: "{{app}}: ახალი პაროლი",
     },
     smsCode: { body: "{{app}}: შენი კოდია {{code}}. მოქმედებს 5 წუთი." },
+    passwordChanged: {
+      body: "{{app}}-ზე შენი ანგარიშის პაროლი შეიცვალა: {{when}}.\n\nთუ ეს შენ არ იყავი, მაშინვე დააყენე ახალი პაროლი „პაროლი დაგავიწყდა?“-ით და შეგვატყობინე.",
+      subject: "{{app}}: პაროლი შეიცვალა",
+    },
+    newSignIn: {
+      body: "{{app}}-ზე შენს ანგარიშში ახალი მოწყობილობიდან შევიდნენ: {{device}}, {{when}}.\n\nთუ ეს შენ იყავი, არაფერია გასაკეთებელი. თუ არა, მაშინვე შეცვალე პაროლი.",
+      subject: "{{app}}: შესვლა ახალი მოწყობილობიდან",
+    },
+    twoFactorDisabled: {
+      body: "{{app}}-ზე შენს ანგარიშზე ორფაქტორიანი დაცვა გამოირთო: {{when}}.\n\nთუ ეს შენ არ იყავი, მაშინვე შეცვალე პაროლი და ისევ ჩართე.",
+      subject: "{{app}}: ორფაქტორიანი დაცვა გამოირთო",
+    },
   },
 };
 
@@ -130,6 +175,9 @@ export function messagesFrom(locale: Locale, own: Partial<Record<TemplateKind, T
     emailCode: ({ app, code, purpose }) => letter("emailCode", { app, code, purpose: CODE_PURPOSE[locale][purpose] }),
     resetPassword: ({ app, url }) => letter("resetPassword", { app }, url),
     smsCode: ({ app, code }) => fill(pick("smsCode").body, { app, code }),
+    passwordChanged: ({ app, when }) => letter("passwordChanged", { app, when }),
+    newSignIn: ({ app, device, when }) => letter("newSignIn", { app, device, when }),
+    twoFactorDisabled: ({ app, when }) => letter("twoFactorDisabled", { app, when }),
   };
 }
 

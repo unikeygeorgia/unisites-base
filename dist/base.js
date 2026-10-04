@@ -5,7 +5,7 @@ import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from
 import { messagesFrom, render } from "./messages.js";
 import { isBcrypt, passwords } from "./passwords.js";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.js";
-import { ALL_ON, logMessage, noteCapabilities, readCapabilities, readSwitches, readTemplates, run, } from "./settings.js";
+import { ALL_ON, logMessage, noteCapabilities, readCapabilities, readSwitches, readTemplates, NOTICES_DEFAULT, readNotices, run, } from "./settings.js";
 /** What the code lets this project do, before the admin's switches. */
 export function capabilitiesOf(config) {
     return {
@@ -49,15 +49,35 @@ const GUARDED = [
     "/email-otp/send-verification-otp",
     "/request-password-reset",
 ];
-/**
- * Base's own bookkeeping: every new session is written to _base_sign_in
- * (who, when, from where, how), and a bcrypt password that just signed in
- * is written again as scrypt.
- */
-function unisitesBase() {
+/** "Safari, macOS"-ish, from a user agent, for a notice. */
+export function deviceOf(agent) {
+    if (!agent)
+        return "?";
+    const browser = /Edg\//.test(agent) ? "Edge" : /Chrome\//.test(agent) ? "Chrome" : /Firefox\//.test(agent) ? "Firefox" : /Safari\//.test(agent) ? "Safari" : (agent.split(/[/ ]/)[0] ?? "?");
+    const system = /iPhone|iPad/.test(agent) ? "iOS" : /Android/.test(agent) ? "Android" : /Mac OS X/.test(agent) ? "macOS" : /Windows/.test(agent) ? "Windows" : /Linux/.test(agent) ? "Linux" : "";
+    return [browser, system].filter(Boolean).join(", ").slice(0, 60);
+}
+function unisitesBase(notify) {
     return {
         hooks: {
             after: [
+                {
+                    // A password changed while signed in; a reset is told by onPasswordReset.
+                    handler: createAuthMiddleware(async (ctx) => {
+                        const user = ctx.context.session?.user;
+                        if (user && !(ctx.context.returned instanceof Error))
+                            await notify("passwordChanged", user);
+                    }),
+                    matcher: (ctx) => ctx.path === "/change-password",
+                },
+                {
+                    handler: createAuthMiddleware(async (ctx) => {
+                        const user = ctx.context.session?.user;
+                        if (user && !(ctx.context.returned instanceof Error))
+                            await notify("twoFactorDisabled", user);
+                    }),
+                    matcher: (ctx) => ctx.path === "/two-factor/disable",
+                },
                 {
                     handler: createAuthMiddleware(async (ctx) => {
                         const userId = ctx.context.newSession?.user.id;
@@ -83,6 +103,13 @@ function unisitesBase() {
                             after: async (session, ctx) => {
                                 if (!ctx)
                                     return;
+                                // A device this person has not signed in from before (by its user agent), when they have before.
+                                const before = await ctx.context.adapter.findMany({
+                                    limit: 50,
+                                    model: "signIn",
+                                    where: [{ field: "userId", value: session.userId }],
+                                });
+                                const newDevice = before.length > 0 && !before.some((b) => b.userAgent === (session.userAgent ?? null));
                                 await ctx.context.adapter.create({
                                     data: {
                                         at: new Date(),
@@ -93,6 +120,11 @@ function unisitesBase() {
                                     },
                                     model: "signIn",
                                 });
+                                if (newDevice) {
+                                    const user = await ctx.context.internalAdapter.findUserById(session.userId);
+                                    if (user)
+                                        await notify("newSignIn", user, session.userAgent);
+                                }
                             },
                         },
                     },
@@ -150,7 +182,17 @@ export function baseOptions(config) {
     const signUp = on("signUp");
     const sms = on("phone") ? config.sms : undefined;
     const withPasswords = on("passwords");
-    const plugins = [unisitesBase(), admin(), twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } })];
+    // A security notice, by mail, when the admin left it on and the person has a real address.
+    const notices = config.notices ?? NOTICES_DEFAULT;
+    const when = () => `${new Date().toLocaleString(locale === "ka" ? "ka-GE" : "en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Tbilisi" })} (${locale === "ka" ? "თბილისი" : "Tbilisi"})`;
+    const notify = async (kind, user, agent) => {
+        if (!notices[kind] || !mail || isPlaceholderEmail(user.email))
+            return;
+        const values = { app: config.app, device: deviceOf(agent), when: when() };
+        const letterOf = kind === "newSignIn" ? say.newSignIn(values) : say[kind](values);
+        await later(letter(kind, user.email), () => mail(render(letterOf, user.email)));
+    };
+    const plugins = [unisitesBase(notify), admin(), twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } })];
     if (sms) {
         plugins.push(phoneNumber({
             allowedAttempts: 3,
@@ -202,6 +244,9 @@ export function baseOptions(config) {
             password: passwords,
             requireEmailVerification: true,
             resetPasswordTokenExpiresIn: 60 * 60,
+            // After a reset, every other session ends: whoever had the old password is out.
+            revokeSessionsOnPasswordReset: true,
+            onPasswordReset: async ({ user }) => notify("passwordChanged", user),
             sendResetPassword: async ({ url, user }) => {
                 if (mail)
                     await later(letter("resetPassword", user.email), () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));
@@ -252,15 +297,16 @@ async function settingsFor(config, now = Date.now()) {
     try {
         const switches = await readSwitches(db);
         const templates = await readTemplates(db);
+        const notices = await readNotices(db);
         const known = remembered?.capabilities ?? (await readCapabilities(db));
         const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
         // The log once its table is there (base_0003.sql).
         const log = await hasTable(db, "_base_message_log");
-        remembered = { at: now, capabilities, log, switches, templates };
+        remembered = { at: now, capabilities, log, notices, switches, templates };
     }
     catch {
         // No _base_settings yet: the code alone decides.
-        remembered = { at: now, capabilities: null, log: false, switches: ALL_ON, templates: empty };
+        remembered = { at: now, capabilities: null, log: false, notices: NOTICES_DEFAULT, switches: ALL_ON, templates: empty };
     }
     return remembered;
 }
@@ -278,6 +324,7 @@ export function createBase(config) {
     const make = (settings) => betterAuth(baseOptions({
         ...config,
         log: config.log ?? settings.log,
+        notices: config.notices ?? settings.notices,
         switches: config.switches ?? settings.switches,
         templates: config.templates ?? settings.templates,
     }));

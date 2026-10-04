@@ -20,6 +20,9 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 - **Templates:** every SMS and letter is a template with `{{variables}}`, in Georgian and English;
   the admin edits them on Unisites' "Mail" page (kept in `_base_settings`), and a broken one falls
   back to base's own text. `unisites-base/messages` has the defaults and the checks, alone.
+- **Security notices:** a letter when the password changes (after a reset, every other session also
+  ends), when the second factor is turned off, and (off by default) on a sign-in from a new device;
+  each has a switch on Unisites (`notify.<kind>` in `_base_settings`) and a template.
 - **Log:** every SMS and letter sent, or tried, in `_base_message_log` (`base_0003.sql`): when, to
   whom, which, sent or failed with the reason; never the code or the text; kept 90 days.
 - **Mail senders:** SMTP from the project's own mailbox (DirectAdmin or cPanel, Zoho, Google
@@ -35,7 +38,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.4.0.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.5.0.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 

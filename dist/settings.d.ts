@@ -6,7 +6,7 @@
  * what the code can do. base writes what it can do into the same table, so
  * the page shows which switches mean something.
  */
-import { type Locale, type Template, type TemplateKind } from "./messages.ts";
+import { type Locale, type NoticeKind, type Template, type TemplateKind } from "./messages.ts";
 export declare const SETTINGS_TABLE = "_base_settings";
 export declare const LOG_TABLE = "_base_message_log";
 /** How long the log keeps a line. */
@@ -47,4 +47,9 @@ export type LogLine = {
 };
 /** One line in the log; now and then the lines older than LOG_DAYS go. */
 export declare function logMessage(db: SettingsDatabase, line: LogLine, now?: Date): Promise<void>;
+export type Notices = Record<NoticeKind, boolean>;
+/** The security notices before the admin changes anything: a password or a second factor changed, yes; every new device, no. */
+export declare const NOTICES_DEFAULT: Notices;
+/** Which security notices the admin left on (notify.<kind>, "true"/"false"). */
+export declare function readNotices(db: SettingsDatabase): Promise<Notices>;
 export {};

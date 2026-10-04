@@ -7,7 +7,7 @@
  * the page shows which switches mean something.
  */
 
-import { LOCALES, TEMPLATE_KINDS, type Locale, type Template, type TemplateKind } from "./messages.ts";
+import { LOCALES, NOTICE_KINDS, TEMPLATE_KINDS, type Locale, type NoticeKind, type Template, type TemplateKind } from "./messages.ts";
 
 export const SETTINGS_TABLE = "_base_settings";
 export const LOG_TABLE = "_base_message_log";
@@ -132,4 +132,20 @@ export async function logMessage(db: SettingsDatabase, line: LogLine, now = new 
   if (Math.random() < 0.02) {
     await run(db, `delete from ${LOG_TABLE} where at < ?1`, [new Date(now.getTime() - LOG_DAYS * 86_400_000).toISOString()], false);
   }
+}
+
+export type Notices = Record<NoticeKind, boolean>;
+
+/** The security notices before the admin changes anything: a password or a second factor changed, yes; every new device, no. */
+export const NOTICES_DEFAULT: Notices = { newSignIn: false, passwordChanged: true, twoFactorDisabled: true };
+
+/** Which security notices the admin left on (notify.<kind>, "true"/"false"). */
+export async function readNotices(db: SettingsDatabase): Promise<Notices> {
+  const rows = await run(db, `select key, value from ${SETTINGS_TABLE} where key like 'notify.%'`, [], true);
+  const notices = { ...NOTICES_DEFAULT };
+  for (const row of rows) {
+    const kind = String(row.key).slice("notify.".length) as NoticeKind;
+    if (NOTICE_KINDS.includes(kind)) notices[kind] = String(row.value) === "true";
+  }
+  return notices;
 }

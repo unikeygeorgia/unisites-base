@@ -6,13 +6,25 @@
  * and base falls back to these where nothing is saved.
  */
 export const LOCALES = ["ka", "en"];
-export const TEMPLATE_KINDS = ["confirmEmail", "resetPassword", "emailCode", "smsCode"];
+export const TEMPLATE_KINDS = [
+    "confirmEmail",
+    "resetPassword",
+    "emailCode",
+    "smsCode",
+    "passwordChanged",
+    "newSignIn",
+    "twoFactorDisabled",
+];
+export const NOTICE_KINDS = ["passwordChanged", "newSignIn", "twoFactorDisabled"];
 /** The variables each template may use, and those it must (a code letter without its code is useless). */
 export const VARIABLES = {
     confirmEmail: { may: ["app"], must: [] },
     emailCode: { may: ["app", "code", "purpose"], must: ["code"] },
     resetPassword: { may: ["app"], must: [] },
     smsCode: { may: ["app", "code"], must: ["code"] },
+    passwordChanged: { may: ["app", "when"], must: [] },
+    newSignIn: { may: ["app", "when", "device"], must: [] },
+    twoFactorDisabled: { may: ["app", "when"], must: [] },
 };
 export const TEMPLATES = {
     en: {
@@ -31,6 +43,18 @@ export const TEMPLATES = {
             subject: "{{app}}: a new password",
         },
         smsCode: { body: "{{app}}: your code is {{code}}. It works for 5 minutes." },
+        passwordChanged: {
+            body: "The password of your {{app}} account was changed: {{when}}.\n\nIf it was not you, set a new password at once with \"Forgot password\" and tell us.",
+            subject: "{{app}}: your password was changed",
+        },
+        newSignIn: {
+            body: "Someone signed in to your {{app}} account from a new device: {{device}}, {{when}}.\n\nIf it was you, there is nothing to do. If not, change your password at once.",
+            subject: "{{app}}: a sign-in from a new device",
+        },
+        twoFactorDisabled: {
+            body: "Two-factor sign-in was turned off for your {{app}} account: {{when}}.\n\nIf it was not you, change your password at once and turn it back on.",
+            subject: "{{app}}: two-factor sign-in was turned off",
+        },
     },
     ka: {
         confirmEmail: {
@@ -48,6 +72,18 @@ export const TEMPLATES = {
             subject: "{{app}}: ახალი პაროლი",
         },
         smsCode: { body: "{{app}}: შენი კოდია {{code}}. მოქმედებს 5 წუთი." },
+        passwordChanged: {
+            body: "{{app}}-ზე შენი ანგარიშის პაროლი შეიცვალა: {{when}}.\n\nთუ ეს შენ არ იყავი, მაშინვე დააყენე ახალი პაროლი „პაროლი დაგავიწყდა?“-ით და შეგვატყობინე.",
+            subject: "{{app}}: პაროლი შეიცვალა",
+        },
+        newSignIn: {
+            body: "{{app}}-ზე შენს ანგარიშში ახალი მოწყობილობიდან შევიდნენ: {{device}}, {{when}}.\n\nთუ ეს შენ იყავი, არაფერია გასაკეთებელი. თუ არა, მაშინვე შეცვალე პაროლი.",
+            subject: "{{app}}: შესვლა ახალი მოწყობილობიდან",
+        },
+        twoFactorDisabled: {
+            body: "{{app}}-ზე შენს ანგარიშზე ორფაქტორიანი დაცვა გამოირთო: {{when}}.\n\nთუ ეს შენ არ იყავი, მაშინვე შეცვალე პაროლი და ისევ ჩართე.",
+            subject: "{{app}}: ორფაქტორიანი დაცვა გამოირთო",
+        },
     },
 };
 /** What {{purpose}} reads as, by the code's purpose. */
@@ -112,6 +148,9 @@ export function messagesFrom(locale, own = {}) {
         emailCode: ({ app, code, purpose }) => letter("emailCode", { app, code, purpose: CODE_PURPOSE[locale][purpose] }),
         resetPassword: ({ app, url }) => letter("resetPassword", { app }, url),
         smsCode: ({ app, code }) => fill(pick("smsCode").body, { app, code }),
+        passwordChanged: ({ app, when }) => letter("passwordChanged", { app, when }),
+        newSignIn: ({ app, device, when }) => letter("newSignIn", { app, device, when }),
+        twoFactorDisabled: ({ app, when }) => letter("twoFactorDisabled", { app, when }),
     };
 }
 export const MESSAGES = { en: messagesFrom("en"), ka: messagesFrom("ka") };

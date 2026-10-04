@@ -38,9 +38,28 @@ export type Messages = {
         app: string;
         url: string;
     }) => Letter;
+    /** A security notice: the password was changed. */
+    passwordChanged: (v: {
+        app: string;
+        when: string;
+    }) => Letter;
+    /** A security notice: a sign-in from a device not seen before. */
+    newSignIn: (v: {
+        app: string;
+        when: string;
+        device: string;
+    }) => Letter;
+    /** A security notice: the second factor was turned off. */
+    twoFactorDisabled: (v: {
+        app: string;
+        when: string;
+    }) => Letter;
 };
 export type TemplateKind = keyof Messages;
 export declare const TEMPLATE_KINDS: TemplateKind[];
+/** The security notices, each with its own switch on Unisites. */
+export type NoticeKind = "passwordChanged" | "newSignIn" | "twoFactorDisabled";
+export declare const NOTICE_KINDS: NoticeKind[];
 /** A template: an SMS has a body only; a letter a subject, a body, and for a link a button's label. */
 export type Template = {
     body: string;

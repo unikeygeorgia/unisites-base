@@ -6,7 +6,7 @@
  * what the code can do. base writes what it can do into the same table, so
  * the page shows which switches mean something.
  */
-import { LOCALES, TEMPLATE_KINDS } from "./messages.js";
+import { LOCALES, NOTICE_KINDS, TEMPLATE_KINDS } from "./messages.js";
 export const SETTINGS_TABLE = "_base_settings";
 export const LOG_TABLE = "_base_message_log";
 /** How long the log keeps a line. */
@@ -87,4 +87,17 @@ export async function logMessage(db, line, now = new Date()) {
     if (Math.random() < 0.02) {
         await run(db, `delete from ${LOG_TABLE} where at < ?1`, [new Date(now.getTime() - LOG_DAYS * 86_400_000).toISOString()], false);
     }
+}
+/** The security notices before the admin changes anything: a password or a second factor changed, yes; every new device, no. */
+export const NOTICES_DEFAULT = { newSignIn: false, passwordChanged: true, twoFactorDisabled: true };
+/** Which security notices the admin left on (notify.<kind>, "true"/"false"). */
+export async function readNotices(db) {
+    const rows = await run(db, `select key, value from ${SETTINGS_TABLE} where key like 'notify.%'`, [], true);
+    const notices = { ...NOTICES_DEFAULT };
+    for (const row of rows) {
+        const kind = String(row.key).slice("notify.".length);
+        if (NOTICE_KINDS.includes(kind))
+            notices[kind] = String(row.value) === "true";
+    }
+    return notices;
 }

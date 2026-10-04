@@ -1,5 +1,5 @@
-export { baseOptions, capabilitiesOf, createBase, forgetSettings, RATE_RULES, SETTINGS_TTL_MS, TABLES, type BaseConfig } from "./base.ts";
-export { ALL_ON, LOG_DAYS, LOG_TABLE, SETTINGS_TABLE, SWITCHES, type Switches, type Templates } from "./settings.ts";
+export { baseOptions, capabilitiesOf, createBase, deviceOf, forgetSettings, RATE_RULES, SETTINGS_TTL_MS, TABLES, type BaseConfig } from "./base.ts";
+export { ALL_ON, LOG_DAYS, LOG_TABLE, NOTICES_DEFAULT, SETTINGS_TABLE, SWITCHES, type Notices, type Switches, type Templates } from "./settings.ts";
 export {
   CODE_PURPOSE,
   fill,
@@ -7,6 +7,7 @@ export {
   localeOf,
   MESSAGES,
   messagesFrom,
+  NOTICE_KINDS,
   render,
   TEMPLATE_KINDS,
   templateProblems,
@@ -16,6 +17,7 @@ export {
   type Letter,
   type Locale,
   type Messages,
+  type NoticeKind,
   type Template,
   type TemplateKind,
 } from "./messages.ts";
