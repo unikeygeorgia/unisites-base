@@ -5,6 +5,18 @@ import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from
 import { MESSAGES, render } from "./messages.js";
 import { isBcrypt, passwords } from "./passwords.js";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.js";
+import { ALL_ON, noteCapabilities, readCapabilities, readSwitches } from "./settings.js";
+/** What the code lets this project do, before the admin's switches. */
+export function capabilitiesOf(config) {
+    return {
+        emailCode: Boolean(config.mail),
+        facebook: Boolean(config.facebook),
+        google: Boolean(config.google),
+        passwords: Boolean(config.mail) && config.passwords !== false,
+        phone: Boolean(config.sms),
+        signUp: config.signUp !== false,
+    };
+}
 /** The table names, as the migration makes them. */
 export const TABLES = {
     account: "_base_account",
@@ -123,8 +135,13 @@ export function baseOptions(config) {
     const mail = send
         ? (letter) => (isPlaceholderEmail(letter.to) ? Promise.resolve() : send(letter))
         : undefined;
-    const sms = config.sms;
-    const withPasswords = Boolean(mail) && config.passwords !== false;
+    // A way in is on when the code can do it and the admin has not switched it off.
+    const can = capabilitiesOf(config);
+    const switches = config.switches ?? ALL_ON;
+    const on = (key) => can[key] && switches[key];
+    const signUp = on("signUp");
+    const sms = on("phone") ? config.sms : undefined;
+    const withPasswords = on("passwords");
     const plugins = [unisitesBase(), admin(), twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } })];
     if (sms) {
         plugins.push(phoneNumber({
@@ -133,15 +150,15 @@ export function baseOptions(config) {
             otpLength: 6,
             phoneNumberValidator: isE164,
             sendOTP: ({ code, phoneNumber: to }) => later("sms code", () => sms(to, say.smsCode({ app: config.app, code }))),
-            signUpOnVerification: config.signUp === false
+            signUpOnVerification: !signUp
                 ? undefined
                 : { getTempEmail: placeholderEmail, getTempName: (phone) => phone },
         }));
     }
-    if (mail) {
+    if (mail && on("emailCode")) {
         plugins.push(emailOTP({
             allowedAttempts: 3,
-            disableSignUp: config.signUp === false,
+            disableSignUp: !signUp,
             expiresIn: 300,
             otpLength: 6,
             sendVerificationOTP: ({ email, otp, type }) => later("email code", () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
@@ -153,10 +170,10 @@ export function baseOptions(config) {
         plugins.push(captcha({ endpoints: GUARDED, provider: "cloudflare-turnstile", secretKey: config.turnstileSecret }));
     }
     const social = {};
-    if (config.google)
-        social.google = { ...config.google, prompt: "select_account" };
-    if (config.facebook)
-        social.facebook = config.facebook;
+    if (config.google && on("google"))
+        social.google = { ...config.google, disableSignUp: !signUp, prompt: "select_account" };
+    if (config.facebook && on("facebook"))
+        social.facebook = { ...config.facebook, disableSignUp: !signUp };
     return {
         account: { modelName: TABLES.account },
         advanced: {
@@ -172,7 +189,7 @@ export function baseOptions(config) {
         database: config.database,
         emailAndPassword: {
             autoSignIn: true,
-            disableSignUp: config.signUp === false,
+            disableSignUp: !signUp,
             enabled: withPasswords,
             password: passwords,
             requireEmailVerification: true,
@@ -207,13 +224,48 @@ export function baseOptions(config) {
         verification: { modelName: TABLES.verification },
     };
 }
+/** How long a Worker keeps the switches before reading them again. */
+export const SETTINGS_TTL_MS = 30_000;
+let remembered = null;
+/** Forget the switches read before (tests; a Worker forgets them after SETTINGS_TTL_MS). */
+export function forgetSettings() {
+    remembered = null;
+}
+/**
+ * The admin's switches from the project's D1, kept for SETTINGS_TTL_MS, and
+ * what the code can do written beside them for the Unisites page. Before the
+ * project has base_0002.sql, everything the code can do is on.
+ */
+async function switchesFor(config, now = Date.now()) {
+    if (config.switches)
+        return config.switches;
+    if (remembered && now - remembered.at < SETTINGS_TTL_MS)
+        return remembered.switches;
+    const db = config.database;
+    try {
+        const switches = await readSwitches(db);
+        const known = remembered?.capabilities ?? (await readCapabilities(db));
+        const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
+        remembered = { at: now, capabilities, switches };
+        return switches;
+    }
+    catch {
+        // No _base_settings yet: the code alone decides.
+        remembered = { at: now, capabilities: null, switches: ALL_ON };
+        return ALL_ON;
+    }
+}
 export function createBase(config) {
-    const auth = betterAuth(baseOptions(config));
+    baseOptions(config); // a wrong secret is said at once, not at the first request
+    const make = (switches) => betterAuth(baseOptions({ ...config, switches }));
+    let made = null;
+    const auth = () => (made ??= switchesFor(config).then(make));
     return {
+        /** better-auth, with the admin's switches applied. */
         auth,
         /** Answers /api/auth/* (sign-up, sign-in, codes, sessions, Google). */
-        handler: (request) => auth.handler(request),
+        handler: async (request) => (await auth()).handler(request),
         /** The person signed in on this request, or null. */
-        session: (request) => auth.api.getSession({ headers: request.headers }),
+        session: async (request) => (await auth()).api.getSession({ headers: request.headers }),
     };
 }

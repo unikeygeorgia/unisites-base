@@ -1,6 +1,7 @@
 import { type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
 import { type Locale, type Messages } from "./messages.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
+import { type Switches } from "./settings.ts";
 /**
  * A Unisites project's sign-in (ADR 0021, 0022): better-auth on the
  * project's own D1, in the project's own Worker. Its tables are _base_*
@@ -54,7 +55,11 @@ export type BaseConfig = {
     waitUntil?: (promise: Promise<unknown>) => void;
     /** Where a failed send is told (the Worker's log by default). */
     onSendError?: (what: string, error: unknown) => void;
+    /** The admin's switches (settings.ts); createBase reads them from the project's D1. */
+    switches?: Switches;
 };
+/** What the code lets this project do, before the admin's switches. */
+export declare function capabilitiesOf(config: BaseConfig): Switches;
 /** The table names, as the migration makes them. */
 export declare const TABLES: {
     readonly account: "_base_account";
@@ -202,8 +207,13 @@ export declare function baseOptions(config: BaseConfig): {
         modelName: "_base_verification";
     };
 };
+/** How long a Worker keeps the switches before reading them again. */
+export declare const SETTINGS_TTL_MS = 30000;
+/** Forget the switches read before (tests; a Worker forgets them after SETTINGS_TTL_MS). */
+export declare function forgetSettings(): void;
 export declare function createBase(config: BaseConfig): {
-    auth: import("better-auth").Auth<{
+    /** better-auth, with the admin's switches applied. */
+    auth: () => Promise<import("better-auth").Auth<{
         account: {
             modelName: "_base_account";
         };
@@ -304,7 +314,7 @@ export declare function createBase(config: BaseConfig): {
         verification: {
             modelName: "_base_verification";
         };
-    }>;
+    }>>;
     /** Answers /api/auth/* (sign-up, sign-in, codes, sessions, Google). */
     handler: (request: Request) => Promise<Response>;
     /** The person signed in on this request, or null. */

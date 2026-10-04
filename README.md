@@ -17,12 +17,15 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
   characters or no start, and no mail ever sent to a phone-only account's placeholder address.
 - **Every sign-in** is written to `_base_sign_in`: who, when, from where, how.
 - **Language:** SMS and mail in Georgian or English, the person's own.
+- **Switches:** the project's admin turns ways in (and sign-up) off and on from Unisites'
+  "Sign-in methods" page, kept in `_base_settings`; a Worker reads them every 30 seconds. A switch
+  only closes what the code can do; base writes what the code can do beside them for the page.
 
 ## Use
 
 ```bash
-npm install github:unikeygeorgia/unisites-base#v0.1.0   # a tag; the lockfile pins its commit
-npx unisites-base migrations          # copies base_0001.sql into ./migrations
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.2.0.tar.gz   # the lockfile keeps its hash
+npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 
 ```ts

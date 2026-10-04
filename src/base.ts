@@ -7,6 +7,7 @@ import { MESSAGES, render, type Locale, type Messages } from "./messages.ts";
 import { isBcrypt, passwords } from "./passwords.ts";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
+import { ALL_ON, noteCapabilities, readCapabilities, readSwitches, type SettingsDatabase, type Switches } from "./settings.ts";
 
 /**
  * A Unisites project's sign-in (ADR 0021, 0022): better-auth on the
@@ -56,7 +57,21 @@ export type BaseConfig = {
   waitUntil?: (promise: Promise<unknown>) => void;
   /** Where a failed send is told (the Worker's log by default). */
   onSendError?: (what: string, error: unknown) => void;
+  /** The admin's switches (settings.ts); createBase reads them from the project's D1. */
+  switches?: Switches;
 };
+
+/** What the code lets this project do, before the admin's switches. */
+export function capabilitiesOf(config: BaseConfig): Switches {
+  return {
+    emailCode: Boolean(config.mail),
+    facebook: Boolean(config.facebook),
+    google: Boolean(config.google),
+    passwords: Boolean(config.mail) && config.passwords !== false,
+    phone: Boolean(config.sms),
+    signUp: config.signUp !== false,
+  };
+}
 
 /** The table names, as the migration makes them. */
 export const TABLES = {
@@ -179,8 +194,13 @@ export function baseOptions(config: BaseConfig) {
   const mail: MailSender | undefined = send
     ? (letter) => (isPlaceholderEmail(letter.to) ? Promise.resolve() : send(letter))
     : undefined;
-  const sms = config.sms;
-  const withPasswords = Boolean(mail) && config.passwords !== false;
+  // A way in is on when the code can do it and the admin has not switched it off.
+  const can = capabilitiesOf(config);
+  const switches = config.switches ?? ALL_ON;
+  const on = (key: keyof Switches) => can[key] && switches[key];
+  const signUp = on("signUp");
+  const sms = on("phone") ? config.sms : undefined;
+  const withPasswords = on("passwords");
 
   const plugins: BetterAuthPlugin[] = [unisitesBase(), admin(), twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } })];
   if (sms) {
@@ -192,17 +212,17 @@ export function baseOptions(config: BaseConfig) {
         phoneNumberValidator: isE164,
         sendOTP: ({ code, phoneNumber: to }) => later("sms code", () => sms(to, say.smsCode({ app: config.app, code }))),
         signUpOnVerification:
-          config.signUp === false
+          !signUp
             ? undefined
             : { getTempEmail: placeholderEmail, getTempName: (phone) => phone },
       }),
     );
   }
-  if (mail) {
+  if (mail && on("emailCode")) {
     plugins.push(
       emailOTP({
         allowedAttempts: 3,
-        disableSignUp: config.signUp === false,
+        disableSignUp: !signUp,
         expiresIn: 300,
         otpLength: 6,
         sendVerificationOTP: ({ email, otp, type }) =>
@@ -216,8 +236,8 @@ export function baseOptions(config: BaseConfig) {
   }
 
   const social: NonNullable<BetterAuthOptions["socialProviders"]> = {};
-  if (config.google) social.google = { ...config.google, prompt: "select_account" };
-  if (config.facebook) social.facebook = config.facebook;
+  if (config.google && on("google")) social.google = { ...config.google, disableSignUp: !signUp, prompt: "select_account" };
+  if (config.facebook && on("facebook")) social.facebook = { ...config.facebook, disableSignUp: !signUp };
 
   return {
     account: { modelName: TABLES.account },
@@ -234,7 +254,7 @@ export function baseOptions(config: BaseConfig) {
     database: config.database,
     emailAndPassword: {
       autoSignIn: true,
-      disableSignUp: config.signUp === false,
+      disableSignUp: !signUp,
       enabled: withPasswords,
       password: passwords,
       requireEmailVerification: true,
@@ -268,13 +288,49 @@ export function baseOptions(config: BaseConfig) {
   } satisfies BetterAuthOptions;
 }
 
+/** How long a Worker keeps the switches before reading them again. */
+export const SETTINGS_TTL_MS = 30_000;
+
+let remembered: { at: number; capabilities: string | null; switches: Switches } | null = null;
+
+/** Forget the switches read before (tests; a Worker forgets them after SETTINGS_TTL_MS). */
+export function forgetSettings(): void {
+  remembered = null;
+}
+
+/**
+ * The admin's switches from the project's D1, kept for SETTINGS_TTL_MS, and
+ * what the code can do written beside them for the Unisites page. Before the
+ * project has base_0002.sql, everything the code can do is on.
+ */
+async function switchesFor(config: BaseConfig, now = Date.now()): Promise<Switches> {
+  if (config.switches) return config.switches;
+  if (remembered && now - remembered.at < SETTINGS_TTL_MS) return remembered.switches;
+  const db = config.database as SettingsDatabase;
+  try {
+    const switches = await readSwitches(db);
+    const known = remembered?.capabilities ?? (await readCapabilities(db));
+    const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
+    remembered = { at: now, capabilities, switches };
+    return switches;
+  } catch {
+    // No _base_settings yet: the code alone decides.
+    remembered = { at: now, capabilities: null, switches: ALL_ON };
+    return ALL_ON;
+  }
+}
+
 export function createBase(config: BaseConfig) {
-  const auth = betterAuth(baseOptions(config));
+  baseOptions(config); // a wrong secret is said at once, not at the first request
+  const make = (switches: Switches) => betterAuth(baseOptions({ ...config, switches }));
+  let made: Promise<ReturnType<typeof make>> | null = null;
+  const auth = () => (made ??= switchesFor(config).then(make));
   return {
+    /** better-auth, with the admin's switches applied. */
     auth,
     /** Answers /api/auth/* (sign-up, sign-in, codes, sessions, Google). */
-    handler: (request: Request) => auth.handler(request),
+    handler: async (request: Request) => (await auth()).handler(request),
     /** The person signed in on this request, or null. */
-    session: (request: Request) => auth.api.getSession({ headers: request.headers }),
+    session: async (request: Request) => (await auth()).api.getSession({ headers: request.headers }),
   };
 }

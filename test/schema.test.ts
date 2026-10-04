@@ -9,6 +9,11 @@ describe("the migration", () => {
     expect(readFileSync(new URL("../migrations/base_0001.sql", import.meta.url), "utf8")).toBe(await baseSql());
   });
 
+  it("keeps the switches in _base_settings (base_0002.sql)", () => {
+    const sql = readFileSync(new URL("../migrations/base_0002.sql", import.meta.url), "utf8");
+    expect([...sql.matchAll(/create table "([^"]+)"/g)].map((m) => m[1])).toEqual(["_base_settings"]);
+  });
+
   it("names every table _base_*", () => {
     const sql = readFileSync(new URL("../migrations/base_0001.sql", import.meta.url), "utf8");
     const tables = [...sql.matchAll(/create table "([^"]+)"/g)].map((m) => m[1]);
