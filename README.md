@@ -31,6 +31,14 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
   (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_FROM`; or `RESEND_API_KEY`), so
   the project's code does not change with the sender. `unisites-base/smtp` is the SMTP client alone,
   without better-auth (Unisites tests a mailbox with it before saving it).
+- **Invitations and reset letters from Unisites:** the project's admin invites someone, or sends
+  someone a reset letter, from Unisites' "Users" page. Unisites signs the order (HMAC-SHA256, good
+  for 5 minutes) with the project's own key, the Worker secret `BASE_PLATFORM_KEY`, and the project
+  sends the letter through its own sender: Unisites never holds the project's mail keys. The link
+  (7 days for an invitation, 1 hour for a reset) opens the project's own password page, or base's
+  (`/api/auth/unisites/set-password`, Georgian and English, no referrer, no cache, its own script
+  only); using it confirms the address. Without `BASE_PLATFORM_KEY` there are no orders.
+  `unisites-base/platform` is the signing alone, for Unisites' side.
 - **Switches:** the project's admin turns ways in (and sign-up) off and on from Unisites'
   "Sign-in methods" page, kept in `_base_settings`; a Worker reads them every 30 seconds. A switch
   only closes what the code can do; base writes what the code can do beside them for the page.
@@ -38,7 +46,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.5.0.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.6.0.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 
@@ -59,6 +67,7 @@ export default {
         mail: mailFromEnv(env),                       // SMTP or Resend, as set on Unisites
         google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET },
         turnstileSecret: env.TURNSTILE_SECRET,
+        platformKey: env.BASE_PLATFORM_KEY,          // invitations and reset letters from Unisites
         waitUntil: (p) => ctx.waitUntil(p),
       });
       return base.handler(request);
@@ -68,7 +77,7 @@ export default {
 };
 ```
 
-Secrets (`BASE_SECRET` and the senders' keys) are set on the project's Worker from Unisites, never
+Secrets (`BASE_SECRET`, `BASE_PLATFORM_KEY` and the senders' keys) are set on the project's Worker from Unisites, never
 in the repository.
 
 ## Develop

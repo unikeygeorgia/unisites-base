@@ -38,6 +38,11 @@ export type Messages = {
         app: string;
         url: string;
     }) => Letter;
+    /** An invitation from the project's admin, sent by Unisites: the link sets the first password. */
+    invite: (v: {
+        app: string;
+        url: string;
+    }) => Letter;
     /** A security notice: the password was changed. */
     passwordChanged: (v: {
         app: string;

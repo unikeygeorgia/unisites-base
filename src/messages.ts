@@ -21,6 +21,8 @@ export type Messages = {
   confirmEmail: (v: { app: string; url: string }) => Letter;
   /** The link that sets a new password. */
   resetPassword: (v: { app: string; url: string }) => Letter;
+  /** An invitation from the project's admin, sent by Unisites: the link sets the first password. */
+  invite: (v: { app: string; url: string }) => Letter;
   /** A security notice: the password was changed. */
   passwordChanged: (v: { app: string; when: string }) => Letter;
   /** A security notice: a sign-in from a device not seen before. */
@@ -33,6 +35,7 @@ export type TemplateKind = keyof Messages;
 export const TEMPLATE_KINDS: TemplateKind[] = [
   "confirmEmail",
   "resetPassword",
+  "invite",
   "emailCode",
   "smsCode",
   "passwordChanged",
@@ -52,6 +55,7 @@ export const VARIABLES: Record<TemplateKind, { may: string[]; must: string[] }> 
   confirmEmail: { may: ["app"], must: [] },
   emailCode: { may: ["app", "code", "purpose"], must: ["code"] },
   resetPassword: { may: ["app"], must: [] },
+  invite: { may: ["app"], must: [] },
   smsCode: { may: ["app", "code"], must: ["code"] },
   passwordChanged: { may: ["app", "when"], must: [] },
   newSignIn: { may: ["app", "when", "device"], must: [] },
@@ -73,6 +77,11 @@ export const TEMPLATES: Record<Locale, Record<TemplateKind, Template>> = {
       body: "Open the link to set a new password. It works for 1 hour. If you did not ask for it, your password stays as it is.",
       button: "Set a new password",
       subject: "{{app}}: a new password",
+    },
+    invite: {
+      body: "You were invited to {{app}}. Open the link, set your password, and you are in. It works for 7 days.",
+      button: "Accept the invitation",
+      subject: "{{app}}: you are invited",
     },
     smsCode: { body: "{{app}}: your code is {{code}}. It works for 5 minutes." },
     passwordChanged: {
@@ -102,6 +111,11 @@ export const TEMPLATES: Record<Locale, Record<TemplateKind, Template>> = {
       body: "ახალი პაროლისთვის გახსენი ბმული. ის 1 საათი მოქმედებს. თუ ეს შენ არ გითხოვია, პაროლი არ შეიცვლება.",
       button: "ახალი პაროლი",
       subject: "{{app}}: ახალი პაროლი",
+    },
+    invite: {
+      body: "{{app}}-ზე მოგიწვიეს. გახსენი ბმული, დააყენე პაროლი და შედი. ბმული 7 დღე მოქმედებს.",
+      button: "მოწვევის მიღება",
+      subject: "{{app}}: მოწვევა",
     },
     smsCode: { body: "{{app}}: შენი კოდია {{code}}. მოქმედებს 5 წუთი." },
     passwordChanged: {
@@ -150,7 +164,7 @@ export function templateProblems(kind: TemplateKind, template: Template): string
   for (const name of must) if (!used.includes(name)) problems.push(`{{${name}}} is missing`);
   if (!template.body.trim()) problems.push("the text is empty");
   if (kind !== "smsCode" && !template.subject?.trim()) problems.push("the subject is empty");
-  if ((kind === "confirmEmail" || kind === "resetPassword") && !template.button?.trim()) problems.push("the button is empty");
+  if ((kind === "confirmEmail" || kind === "resetPassword" || kind === "invite") && !template.button?.trim()) problems.push("the button is empty");
   if (kind === "smsCode" && template.body.length > 300) problems.push("an SMS this long is several SMS");
   if (text.length > 5000) problems.push("too long");
   return problems;
@@ -174,6 +188,7 @@ export function messagesFrom(locale: Locale, own: Partial<Record<TemplateKind, T
     confirmEmail: ({ app, url }) => letter("confirmEmail", { app }, url),
     emailCode: ({ app, code, purpose }) => letter("emailCode", { app, code, purpose: CODE_PURPOSE[locale][purpose] }),
     resetPassword: ({ app, url }) => letter("resetPassword", { app }, url),
+    invite: ({ app, url }) => letter("invite", { app }, url),
     smsCode: ({ app, code }) => fill(pick("smsCode").body, { app, code }),
     passwordChanged: ({ app, when }) => letter("passwordChanged", { app, when }),
     newSignIn: ({ app, device, when }) => letter("newSignIn", { app, device, when }),

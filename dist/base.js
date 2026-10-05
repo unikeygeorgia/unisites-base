@@ -3,6 +3,7 @@ import { createAuthMiddleware } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from "better-auth/plugins";
 import { messagesFrom, render } from "./messages.js";
+import { firstPasswords, unisitesOrders } from "./orders.js";
 import { isBcrypt, passwords } from "./passwords.js";
 import { isE164, isPlaceholderEmail, placeholderEmail } from "./phone.js";
 import { ALL_ON, logMessage, noteCapabilities, readCapabilities, readSwitches, readTemplates, NOTICES_DEFAULT, readNotices, run, } from "./settings.js";
@@ -40,6 +41,7 @@ export const RATE_RULES = {
     "/sign-in/email": { max: 5, window: 60 },
     "/sign-in/email-otp": { max: 10, window: 60 },
     "/sign-up/email": { max: 5, window: 60 },
+    "/unisites/order": { max: 20, window: 60 },
 };
 /** Paths a person reaches to get in, guarded by Turnstile when it is on. */
 const GUARDED = [
@@ -158,13 +160,19 @@ export function baseOptions(config) {
     // The project's own templates where it has them, base's where not, and the code's own last.
     const say = { ...messagesFrom(locale, config.templates?.[locale]), ...config.messages };
     const db = config.database;
-    /** Sends after the answer (waitUntil), and writes the outcome to the log; a failure is said, never thrown. */
-    const later = (line, send) => {
+    /** Sends and writes the outcome to the log; a failure is said, and thrown only to one who waits for it. */
+    const deliver = (line, send, rethrow) => {
         const note = (status, error) => config.log ? logMessage(db, { ...line, error: error ?? null, status }).catch(() => undefined) : Promise.resolve();
-        const sending = send().then(() => note("sent"), (error) => {
+        return send().then(() => note("sent"), async (error) => {
             (config.onSendError ?? ((w, e) => console.error(JSON.stringify({ error: String(e), message: `base: ${w} not sent` }))))(line.kind, error);
-            return note("failed", error instanceof Error ? error.message : String(error));
+            await note("failed", error instanceof Error ? error.message : String(error));
+            if (rethrow)
+                throw error;
         });
+    };
+    /** Sends after the answer (waitUntil): a person waiting for a code does not wait for the mail server. */
+    const later = (line, send) => {
+        const sending = deliver(line, send, false);
         if (config.waitUntil)
             config.waitUntil(sending);
         return config.waitUntil ? Promise.resolve() : sending;
@@ -192,7 +200,22 @@ export function baseOptions(config) {
         const letterOf = kind === "newSignIn" ? say.newSignIn(values) : say[kind](values);
         await later(letter(kind, user.email), () => mail(render(letterOf, user.email)));
     };
-    const plugins = [unisitesBase(notify), admin(), twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } })];
+    const plugins = [
+        unisitesBase(notify),
+        unisitesOrders({
+            app: config.app,
+            // Unisites waits for this letter, to say whether it went.
+            deliver: (kind, to, letterOf) => (mail ? deliver(letter(kind, to), () => mail(render(letterOf, to)), true) : Promise.reject(new Error("no mail sender"))),
+            key: config.platformKey,
+            mail,
+            messages: (l) => ({ ...messagesFrom(l, config.templates?.[l]), ...config.messages }),
+            passwordPage: config.passwordPage,
+            passwords: withPasswords,
+            signInURL: config.signInURL,
+        }),
+        admin(),
+        twoFactor({ issuer: config.app, schema: { twoFactor: { modelName: TABLES.twoFactor } } }),
+    ];
     if (sms) {
         plugins.push(phoneNumber({
             allowedAttempts: 3,
@@ -246,7 +269,8 @@ export function baseOptions(config) {
             resetPasswordTokenExpiresIn: 60 * 60,
             // After a reset, every other session ends: whoever had the old password is out.
             revokeSessionsOnPasswordReset: true,
-            onPasswordReset: async ({ user }) => notify("passwordChanged", user),
+            // Not for a first password (an invitation): nothing was changed.
+            onPasswordReset: async ({ user }, request) => (request && firstPasswords.has(request) ? undefined : notify("passwordChanged", user)),
             sendResetPassword: async ({ url, user }) => {
                 if (mail)
                     await later(letter("resetPassword", user.email), () => mail(render(say.resetPassword({ app: config.app, url }), user.email)));

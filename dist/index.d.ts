@@ -5,3 +5,5 @@ export { isBcrypt } from "./passwords.ts";
 export { isE164, isPlaceholderEmail, placeholderEmail, toE164 } from "./phone.ts";
 export { mailFromEnv, resend, smsoffice, type Mail, type MailSender, type SmsSender } from "./senders.ts";
 export { mailbox, message, sendSmtp, smtp, SmtpError, type SmtpOptions, type SmtpSecurity } from "./smtp.ts";
+export { INVITE_DAYS } from "./orders.ts";
+export { platformKeyFor, SIGNATURE_HEADER, signOrder, verifyOrder, type PlatformOrder } from "./platform.ts";

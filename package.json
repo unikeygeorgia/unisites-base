@@ -1,13 +1,14 @@
 {
   "name": "unisites-base",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Sign-in and mail for a Unisites project's own Worker and D1 (unisites ADR 0021, 0022).",
   "license": "MIT",
   "type": "module",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./smtp": { "types": "./dist/smtp.d.ts", "import": "./dist/smtp.js" },
-    "./messages": { "types": "./dist/messages.d.ts", "import": "./dist/messages.js" }
+    "./messages": { "types": "./dist/messages.d.ts", "import": "./dist/messages.js" },
+    "./platform": { "types": "./dist/platform.d.ts", "import": "./dist/platform.js" }
   },
   "files": ["dist", "migrations", "bin"],
   "bin": { "unisites-base": "bin/unisites-base.mjs" },

@@ -63,6 +63,12 @@ export type BaseConfig = {
     log?: boolean;
     /** Which security notices go out (settings.ts); createBase reads them from the project's D1. */
     notices?: Notices;
+    /** The key Unisites signs its orders with (invite, reset letter): the Worker secret BASE_PLATFORM_KEY. */
+    platformKey?: string;
+    /** The project's own page for a reset or invitation link (it gets ?token=…); base's own page by default. */
+    passwordPage?: string;
+    /** Where base's password page sends the person when it is done; the site's front page by default. */
+    signInURL?: string;
 };
 /** What the code lets this project do, before the admin's switches. */
 export declare function capabilitiesOf(config: BaseConfig): Switches;
@@ -110,6 +116,10 @@ export declare const RATE_RULES: {
         readonly max: 5;
         readonly window: 60;
     };
+    readonly "/unisites/order": {
+        readonly max: 20;
+        readonly window: 60;
+    };
 };
 /** "Safari, macOS"-ish, from a user agent, for a notice. */
 export declare function deviceOf(agent: string | null | undefined): string;
@@ -150,7 +160,7 @@ export declare function baseOptions(config: BaseConfig): {
         revokeSessionsOnPasswordReset: true;
         onPasswordReset: ({ user }: {
             user: import("better-auth").User;
-        }) => Promise<void>;
+        }, request: Request<unknown, CfProperties<unknown>> | undefined) => Promise<void | undefined>;
         sendResetPassword: ({ url, user }: {
             user: import("better-auth").User;
             url: string;
@@ -195,6 +205,10 @@ export declare function baseOptions(config: BaseConfig): {
             };
             "/sign-up/email": {
                 readonly max: 5;
+                readonly window: 60;
+            };
+            "/unisites/order": {
+                readonly max: 20;
                 readonly window: 60;
             };
         };
@@ -262,7 +276,7 @@ export declare function createBase(config: BaseConfig): {
             revokeSessionsOnPasswordReset: true;
             onPasswordReset: ({ user }: {
                 user: import("better-auth").User;
-            }) => Promise<void>;
+            }, request: Request<unknown, CfProperties<unknown>> | undefined) => Promise<void | undefined>;
             sendResetPassword: ({ url, user }: {
                 user: import("better-auth").User;
                 url: string;
@@ -307,6 +321,10 @@ export declare function createBase(config: BaseConfig): {
                 };
                 "/sign-up/email": {
                     readonly max: 5;
+                    readonly window: 60;
+                };
+                "/unisites/order": {
+                    readonly max: 20;
                     readonly window: 60;
                 };
             };
