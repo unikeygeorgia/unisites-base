@@ -49,7 +49,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.8.0.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.9.0.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 
@@ -269,6 +269,27 @@ export const Realtime = createRoom((env) => ({ data, verify: gotrue.verify, aliv
   trusts it.
 - **Not yet:** changing the address, phone sign-in, a second factor through `/auth/v1`, PKCE.
 
+### supabase.storage: `/storage/v1`
+
+`unisites-base/storage` answers Supabase Storage's API on the project's R2, so `supabase.storage`
+works unchanged: `upload` (a form or a raw body, `upsert`), `download`, `getPublicUrl`,
+`createSignedUrl(s)`, `remove`.
+
+```ts
+import { createStorage } from "unisites-base/storage";
+
+if (url.pathname.startsWith("/storage/v1/"))
+  return createStorage({ r2: env.FILES, data, auth: gotrue.person, admin: gotrue.isService, buckets: access.buckets, secret: env.BASE_SECRET }).handler(request);
+```
+
+- Each file is a row of `storage_objects` (base_0005.sql), under access.json's rules as any table:
+  `list` reads, `create` adds, `update` replaces (upsert), `delete` removes. `folder1`..`folder3`
+  are the path's first folders (Supabase's `storage.foldername(name)[n]`), `owner` is who added it.
+- `buckets` (access.json's `buckets`, from the report): which are public, and each one's size and
+  types. A signed URL is an HMAC of the path and its end, given only for files the person may read.
+- Files are served with `Content-Security-Policy: sandbox` and `nosniff`; a path that climbs (`..`)
+  or hides (control characters, `\`) is refused.
+
 ### Moving from Supabase: the report
 
 ```bash
@@ -304,6 +325,17 @@ keep their digits, timestamps are ISO in UTC as `now()` writes them, booleans 1 
 arrays JSON. People go into `_base_user` with their own ids (old rows' `auth.uid()` is still
 `auth.id`), and bcrypt passwords into `_base_account`: they sign in with the password they had. The
 files are tried on SQLite and every count compared with Postgres before it says they are ready.
+
+Then the files: `--data --storage-origin https://<new address>` also moves `storage.objects`' rows
+and changes every old file address in the rows (`https://<ref>.supabase.co/storage/v1/`) to the new
+one, and
+
+```bash
+SUPABASE_ACCESS_TOKEN=… UNISITES_SERVICE_KEY=… npx unisites-base import-supabase --files --project <ref> --to https://<new address>
+```
+
+copies the files themselves through the new project's `/storage/v1`. A file already there with its
+size is left, so a stopped copy goes on where it stopped; Supabase's rate limit is waited out.
 
 Both drafts are tried before the report is written: the schema on SQLite after base's migrations,
 and `check` on the rules. The tests hold the translation against Postgres itself (PGlite): each
