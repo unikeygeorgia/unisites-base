@@ -29,6 +29,11 @@ export type ExportOptions = {
   fileRows?: number;
   /** Only these tables (people are always moved). */
   tables?: string[];
+  /**
+   * Links to the old project's files, rewritten in every text value: Supabase's
+   * https://<ref>.supabase.co/storage/v1/ becomes the new address's /storage/v1/.
+   */
+  rewrite?: { from: string; to: string };
 };
 
 /** D1 takes a statement of at most 100,000 bytes (bytes: Georgian text is three a letter). */
@@ -58,9 +63,10 @@ function reader(c: Column): { sql: string; kind: Kind } {
   return { sql: `${col}::text`, kind: "text" };
 }
 
-function literal(v: unknown, kind: Kind, notes: Set<string>, where: string): string {
+function literal(v: unknown, kind: Kind, notes: Set<string>, where: string, rewrite?: { from: string; to: string }): string {
   if (v === null || v === undefined) return "NULL";
-  const s = String(v);
+  let s = String(v);
+  if (rewrite && kind === "text" && s.includes(rewrite.from)) s = s.split(rewrite.from).join(rewrite.to);
   if (kind === "number") {
     if (NUMBER.test(s)) return s;
     // NaN and Infinity have no SQLite literal.
@@ -256,13 +262,45 @@ export async function exportData(catalog: Catalog, query: Query, options: Export
 
     const file = t.name.replace(/[^A-Za-z0-9_]/g, "_");
     for (let at = 0, part = 1; at < kept.length; at += fileRows, part++) {
-      const chunk = kept.slice(at, at + fileRows).map((r) => r.map((v, i) => literal(v, readers[i]!.kind, notes, `${t.name}.${cols[i]}`)));
+      const chunk = kept.slice(at, at + fileRows).map((r) => r.map((v, i) => literal(v, readers[i]!.kind, notes, `${t.name}.${cols[i]}`, options.rewrite)));
       const name = `${String(n).padStart(4, "0")}_${file}${kept.length > fileRows ? `_${part}` : ""}.sql`;
       files.push({ name, sql: `${PREAMBLE}\n${inserts(t.name, cols, chunk).join("\n\n")}\n`, rows: chunk.length });
     }
     for (const r of raw) for (const [i, v] of r.entries()) if (v === "infinity" || v === "-infinity") notes.add(`${t.name}.${cols[i]}: ${v} is kept as the text '${v}'`);
     if (kept.length) n++;
   }
+  // Supabase's storage.objects, as base's storage_objects (base_0005.sql): the files' rows; the
+  // bytes are copied by import-supabase --files.
+  if (catalog.buckets.length) {
+    const rows: string[][] = [];
+    for (let offset = 0; ; offset += pageRows) {
+      const page = await query(
+        `select coalesce(json_agg(json_build_array(id::text, bucket_id, name, owner::text, metadata->>'size', metadata->>'mimetype', metadata->>'cacheControl',
+                  to_char(created_at at time zone 'UTC', ${ISO}), to_char(coalesce(updated_at, created_at) at time zone 'UTC', ${ISO}))), '[]'::json)::text as rows
+           from (select * from storage.objects order by id limit ${pageRows} offset ${offset}) x`,
+      );
+      const got = JSON.parse(String(page[0]?.rows ?? "[]")) as (string | null)[][];
+      for (const [id, bucket, name, owner, size, mime, cache, created, updated] of got) {
+        const parts = String(name).split("/").slice(0, -1);
+        rows.push([
+          text(String(id)), text(String(bucket)), text(String(name)), owner ? text(owner) : "NULL",
+          parts[0] ? text(parts[0]) : "NULL", parts[1] ? text(parts[1]) : "NULL", parts[2] ? text(parts[2]) : "NULL",
+          size && NUMBER.test(size) ? size : "NULL", mime ? text(mime) : "NULL", cache ? text(cache) : "NULL", text(String(created)), text(String(updated)),
+        ]);
+      }
+      if (got.length < pageRows) break;
+    }
+    counts.storage_objects = rows.length;
+    for (let at = 0, part = 1; at < rows.length; at += fileRows, part++) {
+      const chunk = rows.slice(at, at + fileRows);
+      files.push({
+        name: `${String(n).padStart(4, "0")}_storage_objects${rows.length > fileRows ? `_${part}` : ""}.sql`,
+        sql: `${PREAMBLE}\n${inserts("storage_objects", ["id", "bucket_id", "name", "owner", "folder1", "folder2", "folder3", "size", "mime_type", "cache_control", "created_at", "updated_at"], chunk).join("\n\n")}\n`,
+        rows: chunk.length,
+      });
+    }
+  }
+
   for (const f of files) {
     for (const statement of f.sql.split(/;\n/)) {
       if (bytes(statement) > 100_000) notes.add(`${f.name}: a row over D1's 100,000-byte statement; it has to be moved by the Worker`);
@@ -298,5 +336,6 @@ export async function countRows(catalog: Catalog, query: Query): Promise<Record<
   const rows = await query(`select json_object_agg(t, n)::text as counts from (${parts}) x`);
   const counts = JSON.parse(String(rows[0]?.counts ?? "{}")) as Record<string, number>;
   const people = await query("select count(*)::int as n from auth.users where coalesce(email, phone, '') <> ''");
-  return { _base_user: Number(people[0]?.n ?? 0), ...counts };
+  const objects = catalog.buckets.length ? await query("select count(*)::int as n from storage.objects") : [];
+  return { _base_user: Number(people[0]?.n ?? 0), ...counts, ...(catalog.buckets.length ? { storage_objects: Number(objects[0]?.n ?? 0) } : {}) };
 }

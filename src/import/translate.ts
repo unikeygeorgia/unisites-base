@@ -445,8 +445,17 @@ class Translator {
           if (!type || family(type) !== family(e.type)) throw new Unsupported(`a cast of ${x.path.join(".")} (${type ?? "?"}) to ${e.type}`);
           return this.col(x.path, scopes);
         }
+        // A folder's text cast to uuid or text compares as the same text.
         if (family(e.type) === "text") return this.val(x, scopes);
         throw new Unsupported(`a cast to ${e.type}`);
+      }
+      case "index": {
+        // storage.foldername(name)[n]: the file's n-th folder, storage_objects' folder1..3.
+        const f = unCast(e.x);
+        if (f.k === "fn" && f.name.join(".") === "storage.foldername" && f.args.length === 1 && unCast(f.args[0]!).k === "col" && e.i >= 1 && e.i <= 3) {
+          return this.col([`folder${e.i}`], scopes);
+        }
+        throw new Unsupported("an array subscript other than storage.foldername(name)[1..3]");
       }
       case "fn":
         return this.fn(e, scopes, false);
@@ -500,6 +509,7 @@ function mapE(e: E, f: (e: E) => E): E {
     case "not":
     case "neg":
     case "cast":
+    case "index":
       return { ...e, x: f(e.x) };
     case "isnull":
     case "is":

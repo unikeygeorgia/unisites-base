@@ -32,6 +32,14 @@ export type ExportOptions = {
     fileRows?: number;
     /** Only these tables (people are always moved). */
     tables?: string[];
+    /**
+     * Links to the old project's files, rewritten in every text value: Supabase's
+     * https://<ref>.supabase.co/storage/v1/ becomes the new address's /storage/v1/.
+     */
+    rewrite?: {
+        from: string;
+        to: string;
+    };
 };
 export declare function exportData(catalog: Catalog, query: Query, options?: ExportOptions): Promise<Exported>;
 /** How many rows each table has in Postgres, to compare after the import. */

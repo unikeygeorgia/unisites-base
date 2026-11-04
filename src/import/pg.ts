@@ -27,7 +27,8 @@ export type E =
   | { k: "sub"; sub: Select }
   | { k: "between"; x: E; lo: E; hi: E; not: boolean }
   | { k: "neg"; x: E }
-  | { k: "cast"; x: E; type: string };
+  | { k: "cast"; x: E; type: string }
+  | { k: "index"; x: E; i: number };
 
 type Tok = { t: "str" | "num" | "id" | "qid" | "op"; v: string };
 
@@ -241,6 +242,9 @@ class Parser {
         const op = this.peek()!.v;
         this.p++;
         x = { k: "bin", op, l: x, r: this.primary() };
+      } else if (this.op("[") && this.peek(1)?.t === "num" && this.op("]", 2)) {
+        x = { k: "index", x, i: Number(this.peek(1)!.v) };
+        this.p += 3;
       } else if (this.op("[")) this.fail("an array subscript");
       else return x;
     }

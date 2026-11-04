@@ -14,7 +14,7 @@ const SERVICE_KEY = "service-key-for-the-server-code-only-0123456789";
 function app() {
   const p = project(
     { verifyEmailBy: "code", trustedOrigins: [ORIGIN] },
-    { migrations: ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"] },
+    {},
   );
   p.db.exec("create table notes (id text primary key, owner text, body text)");
   const exec: Exec = async (sql, params) => p.db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
@@ -249,7 +249,7 @@ describe("with base's breached-password check on", () => {
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
       String(input instanceof Request ? input.url : input).startsWith("https://api.pwnedpasswords.com/") ? new Response("") : real(input, init)) as typeof fetch;
     try {
-      const p = project({ verifyEmailBy: "code", trustedOrigins: [ORIGIN], checkLeakedPasswords: true }, { migrations: ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"] });
+      const p = project({ verifyEmailBy: "code", trustedOrigins: [ORIGIN], checkLeakedPasswords: true }, {});
       const exec: Exec = async (sql, params) => p.db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
       const gotrue = createGotrue({ base: p.base, exec, secret: "a-test-secret-that-is-long-enough-123", serviceKey: SERVICE_KEY });
       const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {

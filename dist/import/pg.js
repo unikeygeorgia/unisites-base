@@ -246,6 +246,10 @@ class Parser {
                 this.p++;
                 x = { k: "bin", op, l: x, r: this.primary() };
             }
+            else if (this.op("[") && this.peek(1)?.t === "num" && this.op("]", 2)) {
+                x = { k: "index", x, i: Number(this.peek(1).v) };
+                this.p += 3;
+            }
             else if (this.op("["))
                 this.fail("an array subscript");
             else

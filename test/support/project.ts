@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { createBase, forgetSettings, type BaseConfig } from "../../src/base.ts";
@@ -9,7 +9,7 @@ export const ORIGIN = "https://shop.test";
 /** A project as a Worker has it: an empty D1 with base's migration, and senders that keep what they send. */
 export function project(
   config: Partial<BaseConfig> = {},
-  { migrations = ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"], switches = {} }: { migrations?: string[]; switches?: Record<string, boolean> } = {},
+  { migrations = readdirSync(new URL("../../migrations/", import.meta.url)).filter((f) => f.endsWith(".sql")).sort(), switches = {} }: { migrations?: string[]; switches?: Record<string, boolean> } = {},
 ) {
   forgetSettings();
   const db = new DatabaseSync(":memory:");

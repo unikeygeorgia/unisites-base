@@ -15,7 +15,7 @@ create table auth.mfa_factors (id uuid primary key, user_id uuid references auth
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 create function auth.role() returns text language sql stable as $$ select current_setting('request.jwt.claim.role', true) $$;
 create table storage.buckets (id text primary key, name text, public boolean default false, file_size_limit bigint, allowed_mime_types text[]);
-create table storage.objects (id uuid primary key, bucket_id text references storage.buckets(id), name text, metadata jsonb);
+create table storage.objects (id uuid primary key, bucket_id text references storage.buckets(id), name text, metadata jsonb, owner uuid, created_at timestamptz default now(), updated_at timestamptz default now());
 alter table storage.objects enable row level security;
 create publication supabase_realtime;
 

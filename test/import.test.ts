@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 import { PGlite } from "@electric-sql/pglite";
@@ -144,7 +144,7 @@ describe("the same answers as Postgres", () => {
 
   async function sqlite() {
     const db = new DatabaseSync(":memory:");
-    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
+    for (const f of readdirSync(new URL("../migrations/", import.meta.url)).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
     db.exec(report.schema);
     const now = new Date().toISOString();
     for (const n of [1, 2, 3]) db.prepare(`insert into _base_user (id, name, email, emailVerified, createdAt, updatedAt) values (?, 'x', ?, 1, ?, ?)`).run(U(n), `u${n}@test`, now, now);
@@ -231,7 +231,7 @@ describe("never more than Postgres", () => {
     const catalog = ((await pg.query(CATALOG_SQL)).rows[0] as { catalog: Catalog }).catalog;
     const report = buildReport(catalog);
     const db = new DatabaseSync(":memory:");
-    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
+    for (const f of readdirSync(new URL("../migrations/", import.meta.url)).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
     db.exec(report.schema);
     const now = new Date().toISOString();
     for (const n of [1, 2, 3]) db.prepare(`insert into _base_user (id, name, email, emailVerified, createdAt, updatedAt) values (?, 'x', ?, 1, ?, ?)`).run(U(n), `u${n}@t`, now, now);
@@ -450,11 +450,15 @@ describe("moving the rows and the people", () => {
       insert into public.tenants (id, name) values ('${T1}', 'Shop one');
       insert into public.memberships values ('${T1}', '${U(1)}', 'owner');
       insert into public.messages (tenant_id, body, direction) select '${T1}', 'm' || g, 'inbound' from generate_series(1, 23) g;
+      create table public.pics (id int primary key, url text, doc jsonb);
+      insert into public.pics values (1, 'https://ref.supabase.co/storage/v1/object/public/media/t/x.jpg', '{"src": "https://ref.supabase.co/storage/v1/object/public/a.png"}'), (2, 'https://elsewhere.test/a.png', null);
+      insert into storage.objects (id, bucket_id, name, metadata, owner, created_at) values
+        ('30000000-0000-0000-0000-000000000002', 'media', 't/${T1}/2026-11-04/x.jpg', '{"size": 9, "mimetype": "image/jpeg", "cacheControl": "max-age=3600"}', '${U(1)}', '2026-11-04 10:00:00+00');
     `);
     const catalog = ((await pg.query(CATALOG_SQL)).rows[0] as { catalog: Catalog }).catalog;
     const report = buildReport(catalog);
     const query = async (sql: string) => (await pg.query(sql)).rows as Record<string, unknown>[];
-    const out = await exportData(catalog, query, { pageRows: 5, fileRows: 10 });
+    const out = await exportData(catalog, query, { pageRows: 5, fileRows: 10, rewrite: { from: "https://ref.supabase.co/storage/v1/", to: "https://new.test/storage/v1/" } });
 
     const p = baseProject();
     p.db.exec(report.schema);
@@ -470,6 +474,16 @@ describe("moving the rows and the people", () => {
       { id: "9007199254740993", price: 12345678901.25, score: 0.1, flag: 1, at: "2026-11-04T06:20:30.456000Z", day: "2026-11-04", doc: '{"a": [1, {"b": null}]}', tags: '["a","b c"]', raw: "00FF", note: "it's; -- not SQL" },
     ]);
     expect(out.notes.join(" ")).toMatch(/odd\.score: NaN/);
+    // A file's address in the rows points to the new project, in text and in JSON alike.
+    expect(p.db.prepare("select url, doc from pics order by id").all()).toEqual([
+      { url: "https://new.test/storage/v1/object/public/media/t/x.jpg", doc: '{"src": "https://new.test/storage/v1/object/public/a.png"}' },
+      { url: "https://elsewhere.test/a.png", doc: null },
+    ]);
+    // The files' rows, with the folders the rules name.
+    expect(p.db.prepare("select bucket_id, name, owner, folder1, folder2, folder3, size, mime_type, cache_control, created_at from storage_objects order by name").all()).toEqual([
+      { bucket_id: "avatars", name: "a/1.png", owner: null, folder1: "a", folder2: null, folder3: null, size: 1200, mime_type: null, cache_control: null, created_at: expect.any(String) },
+      { bucket_id: "media", name: `t/${T1}/2026-11-04/x.jpg`, owner: U(1), folder1: "t", folder2: T1, folder3: "2026-11-04", size: 9, mime_type: "image/jpeg", cache_control: "max-age=3600", created_at: "2026-11-04T10:00:00.000000Z" },
+    ]);
 
     const users = p.db.prepare("select id, name, email, emailVerified, image, banned, phoneNumber from _base_user order by id").all();
     expect(users).toEqual([

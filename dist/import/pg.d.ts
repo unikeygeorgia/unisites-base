@@ -86,6 +86,10 @@ export type E = {
     k: "cast";
     x: E;
     type: string;
+} | {
+    k: "index";
+    x: E;
+    i: number;
 };
 export declare function parseExpr(src: string): E;
 /** A SQL function's body: one SELECT. */

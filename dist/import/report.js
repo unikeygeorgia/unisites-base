@@ -103,10 +103,18 @@ export function buildReport(catalog, options = {}) {
     // ── Rules ──
     const access = { tables: {} };
     const narrower = new Set();
-    const ctx = { tables: served, policies: catalog.policies.filter((p) => p.schema === "public"), functions: catalog.functions, inlined, narrower };
-    for (const t of catalog.tables) {
+    // Supabase's storage.objects is base's storage_objects (base_0005.sql): its policies are that table's
+    // rules, with storage.foldername(name)[n] as folder<n>.
+    const storageTable = catalog.buckets.length || catalog.policies.some((p) => p.schema === "storage") ? storageObjects() : null;
+    if (storageTable)
+        served.set(storageTable.name, storageTable);
+    const policies = catalog.policies
+        .filter((p) => p.schema === "public" || (p.schema === "storage" && p.table === "objects"))
+        .map((p) => (p.schema === "storage" ? { ...p, schema: "public", table: "storage_objects" } : p));
+    const ctx = { tables: served, policies, functions: catalog.functions, inlined, narrower };
+    for (const t of storageTable ? [...catalog.tables, storageTable] : catalog.tables) {
         const policies = ctx.policies.filter((p) => p.table === t.name);
-        const cols = plans.get(t.name);
+        const cols = plans.get(t.name) ?? t.columns.map((c) => planColumn(c, false));
         if (!t.rls) {
             add("rules", t.name, "manual", "row level security is off: in Supabase anyone with the anon key reads and writes it; the draft serves it to no one");
             continue;
@@ -158,6 +166,13 @@ export function buildReport(catalog, options = {}) {
         const ro = readonly.filter((c) => !keyCols.has(c) || !rules.update);
         if (ro.length && ro.length < t.columns.length)
             rules.readonly = ro;
+        if (t === storageTable) {
+            // The person uploading owns the file, as Supabase sets storage.objects.owner.
+            fill.owner = "auth.id";
+            rules.readonly = (rules.readonly ?? []).filter((c) => c !== "owner");
+            if (!rules.readonly.length)
+                delete rules.readonly;
+        }
         if (Object.keys(fill).length)
             rules.fill = fill;
         access.tables[t.name] = rules;
@@ -176,8 +191,8 @@ export function buildReport(catalog, options = {}) {
         const level = failed.size ? "manual" : oneWay.length || differs.length || narrower.size ? "partial" : "auto";
         add("rules", t.name, level, notes.join("; ") || `${policies.length} polic${policies.length === 1 ? "y" : "ies"}`);
     }
-    for (const p of catalog.policies.filter((x) => x.schema === "storage"))
-        add("storage", `policy ${p.name}`, "manual", `storage rules come with R2 (a later step): ${(p.using ?? p.check ?? "").replace(/\s+/g, " ")}`);
+    for (const p of catalog.policies.filter((x) => x.schema === "storage" && x.table !== "objects"))
+        add("storage", `policy ${p.name}`, "manual", `a policy on storage.${p.table}: buckets are set in access.json's "buckets"`);
     // ── Functions, views, realtime, storage, auth, extensions ──
     const triggerFns = new Set(catalog.tables.flatMap((t) => (t.triggers ?? []).map((g) => g.function)));
     for (const f of catalog.functions) {
@@ -200,8 +215,12 @@ export function buildReport(catalog, options = {}) {
         const t = served.get(name);
         add("realtime", name, t?.replica === "f" ? "partial" : "auto", t?.replica === "f" ? "REPLICA IDENTITY FULL: an UPDATE's old row is its key only" : "postgres_changes through the room");
     }
-    for (const b of catalog.buckets)
-        add("storage", `bucket ${b.id}`, "manual", `${b.public ? "public" : "private"}, ${b.objects} files, ${fmtBytes(b.bytes)}: R2 with rules is a later step`);
+    if (catalog.buckets.length)
+        access.buckets = {};
+    for (const b of catalog.buckets) {
+        access.buckets[b.id] = { public: b.public, fileSizeLimit: b.size_limit, allowedMimeTypes: b.mime_types };
+        add("storage", `bucket ${b.id}`, "auto", `${b.public ? "public" : "private"}, ${b.objects} files, ${fmtBytes(b.bytes)}: R2 (unisites-base/storage), files moved with import-supabase --files`);
+    }
     const a = catalog.auth;
     add("sign-in", "users", "auto", `${a.users} people (${a.confirmed} confirmed, ${a.banned} blocked) into _base_user, with their ids, so auth.uid() stays auth.id`);
     if (a.passwords)
@@ -313,4 +332,21 @@ function fmtBytes(n) {
     if (n < 1024 ** 3)
         return `${(n / 1024 ** 2).toFixed(1)} MB`;
     return `${(n / 1024 ** 3).toFixed(2)} GB`;
+}
+/** base's storage_objects (base_0005.sql), as a table of the catalog, for the storage policies to be rules of. */
+function storageObjects() {
+    const all = { select: true, insert: true, update: true, delete: true };
+    const col = (name, udt = "text") => ({ name, type: udt, udt, category: "S", notnull: false, default: null, identity: null, generated: null, enum: null, grants: { anon: { select: true, insert: true, update: true }, authenticated: { select: true, insert: true, update: true } } });
+    return {
+        name: "storage_objects",
+        rls: true,
+        rows: 0,
+        bytes: 0,
+        replica: "d",
+        privileges: { anon: all, authenticated: all },
+        columns: [col("id"), col("bucket_id"), col("name"), col("owner"), col("folder1"), col("folder2"), col("folder3"), col("size", "int8"), col("mime_type"), col("cache_control"), col("created_at", "timestamptz"), col("updated_at", "timestamptz")],
+        constraints: [{ name: "storage_objects_pkey", type: "p", columns: ["id"], references: null, definition: "PRIMARY KEY (id)" }],
+        indexes: [],
+        triggers: [],
+    };
 }
