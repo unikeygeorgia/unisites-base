@@ -43,6 +43,8 @@ import {
 export type BaseConfig = {
   /** The name people see in SMS and mail: "Multicolor". */
   app: string;
+  /** How a new address is confirmed: a link (base's own pages), or a 6-digit code (Supabase's; needs emailCode on). */
+  verifyEmailBy?: "link" | "code";
   /** Where the project answers, "https://myshop.ge"; sign-in lives at /api/auth. */
   baseURL: string;
   /** The project's D1 (env.DB); Node's DatabaseSync in tests. */
@@ -241,10 +243,8 @@ function unisitesBase(notify: Notify): BetterAuthPlugin {
   } satisfies BetterAuthPlugin;
 }
 
-export function baseOptions(config: BaseConfig) {
-  if (!config.secret || config.secret.length < 32) {
-    throw new Error("unisites-base: the secret must be at least 32 characters (a Worker secret, BASE_SECRET)");
-  }
+/** How base says things: the templates, the senders, the log, and the security notices. */
+function sendersOf(config: BaseConfig) {
   const locale = config.locale ?? "ka";
   // The project's own templates where it has them, base's where not, and the code's own last.
   const say: Messages = { ...messagesFrom(locale, config.templates?.[locale]), ...config.messages };
@@ -274,14 +274,6 @@ export function baseOptions(config: BaseConfig) {
   const mail: MailSender | undefined = send
     ? (letter) => (isPlaceholderEmail(letter.to) ? Promise.resolve() : send(letter))
     : undefined;
-  // A way in is on when the code can do it and the admin has not switched it off.
-  const can = capabilitiesOf(config);
-  const switches = config.switches ?? ALL_ON;
-  const on = (key: keyof Switches) => can[key] && switches[key];
-  const signUp = on("signUp");
-  const sms = on("phone") ? config.sms : undefined;
-  const withPasswords = on("passwords");
-
   // A security notice, by mail, when the admin left it on and the person has a real address.
   const notices = config.notices ?? NOTICES_DEFAULT;
   const when = () =>
@@ -292,6 +284,22 @@ export function baseOptions(config: BaseConfig) {
     const letterOf = kind === "newSignIn" ? say.newSignIn(values) : say[kind](values);
     await later(letter(kind, user.email), () => mail(render(letterOf, user.email)));
   };
+  return { deliver, later, letter, locale, mail, notify, say };
+}
+
+export function baseOptions(config: BaseConfig) {
+  if (!config.secret || config.secret.length < 32) {
+    throw new Error("unisites-base: the secret must be at least 32 characters (a Worker secret, BASE_SECRET)");
+  }
+  const { deliver, later, letter, locale, mail, notify, say } = sendersOf(config);
+  // A way in is on when the code can do it and the admin has not switched it off.
+  const can = capabilitiesOf(config);
+  const switches = config.switches ?? ALL_ON;
+  const on = (key: keyof Switches) => can[key] && switches[key];
+  const signUp = on("signUp");
+  const sms = on("phone") ? config.sms : undefined;
+  const withPasswords = on("passwords");
+
   const plugins: BetterAuthPlugin[] = [
     unisitesBase(notify),
     unisitesOrders({
@@ -330,6 +338,8 @@ export function baseOptions(config: BaseConfig) {
         disableSignUp: !signUp,
         expiresIn: 300,
         otpLength: 6,
+        // A sign-up confirmed with a code rather than a link (Supabase's way, for /auth/v1).
+        overrideDefaultEmailVerification: config.verifyEmailBy === "code",
         sendVerificationOTP: ({ email, otp, type }) =>
           later(letter("emailCode", email, type), () => mail(render(say.emailCode({ app: config.app, code: otp, purpose: type }), email))),
       }),
@@ -349,6 +359,8 @@ export function baseOptions(config: BaseConfig) {
     advanced: {
       // __Host-: Secure, path /, no Domain; the browser refuses the cookie otherwise.
       cookiePrefix: "__Host-base",
+      // UUIDs, as Supabase's: a person moved from it keeps theirs, and supabase-js's auth.admin takes only UUIDs.
+      database: { generateId: () => crypto.randomUUID() },
       defaultCookieAttributes: { httpOnly: true, path: "/", sameSite: "lax", secure: true },
       ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
       useSecureCookies: false,
@@ -374,7 +386,8 @@ export function baseOptions(config: BaseConfig) {
     },
     emailVerification: {
       autoSignInAfterVerification: true,
-      sendOnSignUp: true,
+      // With codes, the code is sent by whoever signs up (/auth/v1's signup), not a link here.
+      sendOnSignUp: config.verifyEmailBy !== "code",
       sendVerificationEmail: async ({ url, user }) => {
         if (mail) await later(letter("confirmEmail", user.email), () => mail(render(say.confirmEmail({ app: config.app, url }), user.email)));
       },
@@ -463,5 +476,10 @@ export function createBase(config: BaseConfig) {
     handler: async (request: Request) => (await auth()).handler(request),
     /** The person signed in on this request, or null. */
     session: async (request: Request) => (await auth()).api.getSession({ headers: request.headers }),
+    /** A security notice (a new password, a new device), as base's own flows send it: for /auth/v1. */
+    notify: async (kind: Parameters<Notify>[0], user: Parameters<Notify>[1], agent?: string | null) => {
+      const settings = await settingsFor(config);
+      await sendersOf({ ...config, log: config.log ?? settings.log, notices: config.notices ?? settings.notices, templates: config.templates ?? settings.templates }).notify(kind, user, agent);
+    },
   };
 }

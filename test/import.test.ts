@@ -144,7 +144,7 @@ describe("the same answers as Postgres", () => {
 
   async function sqlite() {
     const db = new DatabaseSync(":memory:");
-    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
+    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
     db.exec(report.schema);
     const now = new Date().toISOString();
     for (const n of [1, 2, 3]) db.prepare(`insert into _base_user (id, name, email, emailVerified, createdAt, updatedAt) values (?, 'x', ?, 1, ?, ?)`).run(U(n), `u${n}@test`, now, now);
@@ -231,7 +231,7 @@ describe("never more than Postgres", () => {
     const catalog = ((await pg.query(CATALOG_SQL)).rows[0] as { catalog: Catalog }).catalog;
     const report = buildReport(catalog);
     const db = new DatabaseSync(":memory:");
-    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
+    for (const f of ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"]) db.exec(readFileSync(new URL(`../migrations/${f}`, import.meta.url), "utf8"));
     db.exec(report.schema);
     const now = new Date().toISOString();
     for (const n of [1, 2, 3]) db.prepare(`insert into _base_user (id, name, email, emailVerified, createdAt, updatedAt) values (?, 'x', ?, 1, ?, ?)`).run(U(n), `u${n}@t`, now, now);
@@ -481,6 +481,7 @@ describe("moving the rows and the people", () => {
       { providerId: "credential", accountId: U(3) },
       { providerId: "google", accountId: "1170000000000000000001" },
     ]);
+    expect(p.db.prepare(`select userId, data from _base_user_metadata`).all()).toEqual([{ userId: U(3), data: '{"must_change_password":true}' }]);
     const signIn = await p.call("/sign-in/email", { email: "ana@example.com", password: "Old-password-1" });
     expect(signIn.response.status, JSON.stringify(signIn.body)).toBe(200);
     expect(signIn.body?.user?.id).toBe(U(1));

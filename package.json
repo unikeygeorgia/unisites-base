@@ -11,7 +11,8 @@
     "./platform": { "types": "./dist/platform.d.ts", "import": "./dist/platform.js" },
     "./data": { "types": "./dist/data.d.ts", "import": "./dist/data.js" },
     "./rest": { "types": "./dist/rest.d.ts", "import": "./dist/rest.js" },
-    "./realtime": { "types": "./dist/realtime.d.ts", "import": "./dist/realtime.js" }
+    "./realtime": { "types": "./dist/realtime.d.ts", "import": "./dist/realtime.js" },
+    "./gotrue": { "types": "./dist/gotrue.d.ts", "import": "./dist/gotrue.js" }
   },
   "files": ["dist", "migrations", "bin"],
   "bin": { "unisites-base": "bin/unisites-base.mjs" },

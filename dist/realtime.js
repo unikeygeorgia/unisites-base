@@ -126,13 +126,18 @@ export class Room {
             ws.serializeAttachment(a);
             return reply("ok", {});
         }
-        if (event === "access_token")
-            return reply("ok", {});
+        if (event === "access_token") {
+            const ok = await this.#token(ws, payload?.access_token);
+            return reply(ok ? "ok" : "error", ok ? {} : { reason: "invalid token" });
+        }
         if (event === "broadcast" || event === "presence")
             return reply("error", { reason: `${event} is not supported` });
         if (event !== "phx_join")
             return reply("error", { reason: "not supported" });
         try {
+            const token = payload?.access_token;
+            if (token !== undefined && !(await this.#token(ws, token)))
+                throw new Error("invalid token");
             if (!topic.startsWith("realtime:") || topic.length > 255)
                 throw new Error("a topic is realtime:<name>");
             const asked = payload?.config?.postgres_changes ?? [];
@@ -140,7 +145,7 @@ export class Room {
                 throw new Error("postgres_changes is a list");
             if (asked.length > MAX_BINDINGS)
                 throw new Error(`at most ${MAX_BINDINGS} postgres_changes in one channel`);
-            const db = this.#config.data.as(a.auth);
+            const db = this.#config.data.as(ws.deserializeAttachment()?.auth ?? a.auth);
             const asking = [];
             for (const b of asked) {
                 const event = b?.event;
@@ -178,6 +183,44 @@ export class Room {
             return reply("error", { reason });
         }
     }
+    /**
+     * A socket's person from its access token. The supabase-js anon key (not a JWT of ours) changes
+     * nothing; a token of ours that does not verify is refused.
+     */
+    async #token(ws, token) {
+        if (!this.#config.verify || typeof token !== "string" || token.split(".").length !== 3)
+            return true;
+        const claims = await this.#config.verify(token);
+        const a = ws.deserializeAttachment();
+        if (!a)
+            return false;
+        // A token that is not ours (an old Supabase anon key, or a forged one) is no one, as signed out.
+        if (!claims || typeof claims.sub !== "string") {
+            ws.serializeAttachment({ ...a, auth: null, exp: undefined, sid: undefined });
+            return true;
+        }
+        ws.serializeAttachment({
+            ...a,
+            auth: { id: claims.sub, ...(typeof claims.email === "string" ? { email: claims.email } : {}) },
+            exp: typeof claims.exp === "number" ? claims.exp : undefined,
+            sid: typeof claims.session_id === "string" ? claims.session_id : undefined,
+        });
+        return true;
+    }
+    // Sessions found alive, for a minute: a broadcast does not ask the database for each socket.
+    #alive = new Map();
+    async #live(a) {
+        if (!a.sid || !this.#config.alive)
+            return true;
+        const known = this.#alive.get(a.sid);
+        if (known && Date.now() - known.at < 60_000)
+            return known.ok;
+        const ok = await this.#config.alive(a.sid).catch(() => false);
+        this.#alive.set(a.sid, { at: Date.now(), ok });
+        if (this.#alive.size > 5000)
+            this.#alive.clear();
+        return ok;
+    }
     /** Sends each change to the sockets that may see it. */
     async broadcast(changes) {
         const sockets = this.#state.getWebSockets().map((ws) => ({ ws, a: ws.deserializeAttachment() }));
@@ -192,8 +235,10 @@ export class Room {
                     close(ws, 4000, "expired");
                     continue;
                 }
-                const who = JSON.stringify(a.auth);
-                const db = this.#config.data.as(a.auth);
+                // A token that has run out, or whose session ended, is no one, until supabase-js sends a renewed one.
+                const auth = (a.exp !== undefined && a.exp * 1000 <= Date.now()) || !(await this.#live(a)) ? null : a.auth;
+                const who = JSON.stringify(auth);
+                const db = this.#config.data.as(auth);
                 for (const [topic, bindings] of Object.entries(a.topics)) {
                     const ids = [];
                     let row = null;

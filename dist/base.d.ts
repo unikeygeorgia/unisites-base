@@ -1,5 +1,5 @@
 import { type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
-import { type Locale, type Messages } from "./messages.ts";
+import { type Locale, type Messages, type NoticeKind } from "./messages.ts";
 import type { MailSender, SmsSender } from "./senders.ts";
 import { type Notices, type Switches, type Templates } from "./settings.ts";
 /**
@@ -19,6 +19,8 @@ import { type Notices, type Switches, type Templates } from "./settings.ts";
 export type BaseConfig = {
     /** The name people see in SMS and mail: "Multicolor". */
     app: string;
+    /** How a new address is confirmed: a link (base's own pages), or a 6-digit code (Supabase's; needs emailCode on). */
+    verifyEmailBy?: "link" | "code";
     /** Where the project answers, "https://myshop.ge"; sign-in lives at /api/auth. */
     baseURL: string;
     /** The project's D1 (env.DB); Node's DatabaseSync in tests. */
@@ -121,6 +123,15 @@ export declare const RATE_RULES: {
         readonly window: 60;
     };
 };
+/**
+ * Base's own bookkeeping: every new session is written to _base_sign_in
+ * (who, when, from where, how), and a bcrypt password that just signed in
+ * is written again as scrypt.
+ */
+type Notify = (kind: NoticeKind, user: {
+    email: string;
+    name?: string | null;
+}, device?: string | null) => Promise<void>;
 /** "Safari, macOS"-ish, from a user agent, for a notice. */
 export declare function deviceOf(agent: string | null | undefined): string;
 export declare function baseOptions(config: BaseConfig): {
@@ -129,6 +140,9 @@ export declare function baseOptions(config: BaseConfig): {
     };
     advanced: {
         cookiePrefix: string;
+        database: {
+            generateId: () => `${string}-${string}-${string}-${string}-${string}`;
+        };
         defaultCookieAttributes: {
             httpOnly: true;
             path: string;
@@ -169,7 +183,7 @@ export declare function baseOptions(config: BaseConfig): {
     };
     emailVerification: {
         autoSignInAfterVerification: true;
-        sendOnSignUp: true;
+        sendOnSignUp: boolean;
         sendVerificationEmail: ({ url, user }: {
             user: import("better-auth").User;
             url: string;
@@ -245,6 +259,9 @@ export declare function createBase(config: BaseConfig): {
         };
         advanced: {
             cookiePrefix: string;
+            database: {
+                generateId: () => `${string}-${string}-${string}-${string}-${string}`;
+            };
             defaultCookieAttributes: {
                 httpOnly: true;
                 path: string;
@@ -285,7 +302,7 @@ export declare function createBase(config: BaseConfig): {
         };
         emailVerification: {
             autoSignInAfterVerification: true;
-            sendOnSignUp: true;
+            sendOnSignUp: boolean;
             sendVerificationEmail: ({ url, user }: {
                 user: import("better-auth").User;
                 url: string;
@@ -373,4 +390,7 @@ export declare function createBase(config: BaseConfig): {
             image?: string | null | undefined | undefined;
         };
     } | null>;
+    /** A security notice (a new password, a new device), as base's own flows send it: for /auth/v1. */
+    notify: (kind: Parameters<Notify>[0], user: Parameters<Notify>[1], agent?: string | null) => Promise<void>;
 };
+export {};

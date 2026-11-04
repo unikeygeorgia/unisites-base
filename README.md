@@ -236,6 +236,39 @@ supabase
   session fields are the ones they joined with, until the socket's hour is up or `disconnect`.
 - **Not yet:** broadcast and presence.
 
+### supabase.auth: `/auth/v1`
+
+`unisites-base/gotrue` answers Supabase Auth's API on base's better-auth, so `supabase.auth` (and
+the server's `auth.getUser(token)` and `auth.admin`) work unchanged:
+
+```ts
+import { createGotrue } from "unisites-base/gotrue";
+
+const base = createBase({ ..., verifyEmailBy: "code" });            // sign-up confirmed with a 6-digit code
+const gotrue = createGotrue({ base, exec: d1(env.DB), secret: env.BASE_SECRET, serviceKey: env.SUPABASE_SERVICE_ROLE_KEY });
+if (url.pathname.startsWith("/auth/v1/")) return gotrue.handler(request);
+const rest = createRest({ data, auth: gotrue.person, admin: gotrue.isService });
+export const Realtime = createRoom((env) => ({ data, verify: gotrue.verify, alive: gotrue.alive }));
+```
+
+- **Served:** `signUp` (then `verifyOtp` with the code, `resend`), `signInWithPassword`,
+  `signInWithOAuth({ provider: "google" })`, `resetPasswordForEmail` (base's letter, back with the
+  session in the URL's hash), `updateUser({ password, data })`, `signOut` (global, local, others),
+  `getUser`, refresh; with the service key `auth.admin`'s `createUser`, `listUsers`,
+  `getUserById`, `updateUserById` (`ban_duration`), `deleteUser`, `inviteUserByEmail`.
+- **Tokens:** the access token is a JWT (HS256, a key made from `BASE_SECRET`), an hour long, and
+  good only while its session lives and its person is not blocked; the refresh token is the base
+  session's (it is not turned over at each refresh). Realtime asks again within a minute.
+- **As base's own forms:** every sign-in and sign-up goes through base's handler (rate limits,
+  Turnstile, the sign-in log); a new password is checked against breached ones and the person gets
+  the notice; ids are UUIDs, as Supabase's. A recovery link refuses a blocked person and one with a
+  second factor; when it proves an address for the first time, a password or session someone else
+  put on it first is removed.
+- **`user_metadata`** is kept in `_base_user_metadata` (base_0004.sql); `full_name` and `avatar_url`
+  are the person's own name and image. A person writes their own, as in Supabase: a rule never
+  trusts it.
+- **Not yet:** changing the address, phone sign-in, a second factor through `/auth/v1`, PKCE.
+
 ### Moving from Supabase: the report
 
 ```bash

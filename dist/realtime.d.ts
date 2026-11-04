@@ -22,6 +22,18 @@ export type RoomConfig = {
     maxAge?: number;
     /** Sockets in the room: each change is checked once for every person among them. */
     maxSockets?: number;
+    /**
+     * The person an access token is for (gotrue.verify): supabase-js sends its token in each join
+     * and again when it is renewed, as the browser has no cookie for /auth/v1's sessions.
+     */
+    verify?: (token: string) => Promise<{
+        sub?: unknown;
+        email?: unknown;
+        exp?: unknown;
+        session_id?: unknown;
+    } | null>;
+    /** Whether a token's session still lives (gotrue.alive): signing out or a block stops the rows within a minute. */
+    alive?: (sessionId: string) => Promise<boolean>;
 };
 export declare class Room {
     #private;

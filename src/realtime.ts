@@ -43,7 +43,8 @@ const MAX_SOCKETS_EACH = 10;
 const MAX_RATE = 50;
 
 type Binding = { id: number; event: string; schema?: string; table: string; filter?: string };
-type Attachment = { auth: Auth | null; ip?: string; at: number; next: number; topics: Record<string, Binding[]> };
+/** exp: when the person's access token (/auth/v1) ends, in seconds; after it they are signed out. */
+type Attachment = { auth: Auth | null; exp?: number; sid?: string; ip?: string; at: number; next: number; topics: Record<string, Binding[]> };
 
 /** The part of a hibernating WebSocket the room uses. */
 export type RoomSocket = {
@@ -67,6 +68,13 @@ export type RoomConfig = {
   maxAge?: number;
   /** Sockets in the room: each change is checked once for every person among them. */
   maxSockets?: number;
+  /**
+   * The person an access token is for (gotrue.verify): supabase-js sends its token in each join
+   * and again when it is renewed, as the browser has no cookie for /auth/v1's sessions.
+   */
+  verify?: (token: string) => Promise<{ sub?: unknown; email?: unknown; exp?: unknown; session_id?: unknown } | null>;
+  /** Whether a token's session still lives (gotrue.alive): signing out or a block stops the rows within a minute. */
+  alive?: (sessionId: string) => Promise<boolean>;
 };
 
 type Message = [string | null, string | null, string, string, unknown];
@@ -156,16 +164,21 @@ export class Room {
       ws.serializeAttachment(a);
       return reply("ok", {});
     }
-    if (event === "access_token") return reply("ok", {});
+    if (event === "access_token") {
+      const ok = await this.#token(ws, (payload as { access_token?: unknown } | null)?.access_token);
+      return reply(ok ? "ok" : "error", ok ? {} : { reason: "invalid token" });
+    }
     if (event === "broadcast" || event === "presence") return reply("error", { reason: `${event} is not supported` });
     if (event !== "phx_join") return reply("error", { reason: "not supported" });
 
     try {
+      const token = (payload as { access_token?: unknown } | null)?.access_token;
+      if (token !== undefined && !(await this.#token(ws, token))) throw new Error("invalid token");
       if (!topic.startsWith("realtime:") || topic.length > 255) throw new Error("a topic is realtime:<name>");
       const asked = (payload as { config?: { postgres_changes?: unknown } } | null)?.config?.postgres_changes ?? [];
       if (!Array.isArray(asked)) throw new Error("postgres_changes is a list");
       if (asked.length > MAX_BINDINGS) throw new Error(`at most ${MAX_BINDINGS} postgres_changes in one channel`);
-      const db = this.#config.data.as(a.auth);
+      const db = this.#config.data.as((ws.deserializeAttachment() as Attachment | null)?.auth ?? a.auth);
       const asking: Omit<Binding, "id">[] = [];
       for (const b of asked as Record<string, unknown>[]) {
         const event = b?.event;
@@ -195,6 +208,42 @@ export class Room {
     }
   }
 
+  /**
+   * A socket's person from its access token. The supabase-js anon key (not a JWT of ours) changes
+   * nothing; a token of ours that does not verify is refused.
+   */
+  async #token(ws: RoomSocket, token: unknown): Promise<boolean> {
+    if (!this.#config.verify || typeof token !== "string" || token.split(".").length !== 3) return true;
+    const claims = await this.#config.verify(token);
+    const a = ws.deserializeAttachment() as Attachment | null;
+    if (!a) return false;
+    // A token that is not ours (an old Supabase anon key, or a forged one) is no one, as signed out.
+    if (!claims || typeof claims.sub !== "string") {
+      ws.serializeAttachment({ ...a, auth: null, exp: undefined, sid: undefined });
+      return true;
+    }
+    ws.serializeAttachment({
+      ...a,
+      auth: { id: claims.sub, ...(typeof claims.email === "string" ? { email: claims.email } : {}) },
+      exp: typeof claims.exp === "number" ? claims.exp : undefined,
+      sid: typeof claims.session_id === "string" ? claims.session_id : undefined,
+    });
+    return true;
+  }
+
+  // Sessions found alive, for a minute: a broadcast does not ask the database for each socket.
+  readonly #alive = new Map<string, { at: number; ok: boolean }>();
+
+  async #live(a: Attachment): Promise<boolean> {
+    if (!a.sid || !this.#config.alive) return true;
+    const known = this.#alive.get(a.sid);
+    if (known && Date.now() - known.at < 60_000) return known.ok;
+    const ok = await this.#config.alive(a.sid).catch(() => false);
+    this.#alive.set(a.sid, { at: Date.now(), ok });
+    if (this.#alive.size > 5000) this.#alive.clear();
+    return ok;
+  }
+
   /** Sends each change to the sockets that may see it. */
   async broadcast(changes: Change[]): Promise<void> {
     const sockets = this.#state.getWebSockets().map((ws) => ({ ws, a: ws.deserializeAttachment() as Attachment | null }));
@@ -208,8 +257,10 @@ export class Room {
           close(ws, 4000, "expired");
           continue;
         }
-        const who = JSON.stringify(a.auth);
-        const db = this.#config.data.as(a.auth);
+        // A token that has run out, or whose session ended, is no one, until supabase-js sends a renewed one.
+        const auth = (a.exp !== undefined && a.exp * 1000 <= Date.now()) || !(await this.#live(a)) ? null : a.auth;
+        const who = JSON.stringify(auth);
+        const db = this.#config.data.as(auth);
         for (const [topic, bindings] of Object.entries(a.topics)) {
           const ids: number[] = [];
           let row: Row | null = null;

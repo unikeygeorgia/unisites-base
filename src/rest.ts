@@ -37,8 +37,13 @@ export type Rpc = RpcFunction | { handler: RpcFunction; get?: boolean };
 
 export type RestConfig = {
   data: ReturnType<typeof createData>;
-  /** The person a request is from, or null; from the session cookie, as unisites-base signs in. */
+  /** The person a request is from, or null; from the session cookie, or /auth/v1's token (gotrue.person). */
   auth: (request: Request) => Promise<Auth | null>;
+  /**
+   * Whether a request is the project's own server code, which reads and writes without rules as
+   * Supabase's service role does (gotrue.isService: the service key). Never from a browser.
+   */
+  admin?: (request: Request) => boolean | Promise<boolean>;
   /** Where the API is; `/rest/v1/` as Supabase has it. */
   prefix?: string;
   /** The project's own functions, for supabase.rpc(name, args). */
@@ -409,8 +414,9 @@ export function createRest(config: RestConfig) {
       if (p && p !== "public") throw new RestError(406, "PGRST106", `only the public schema: ${p}`);
     }
 
-    const auth = await config.auth(request);
-    const db = config.data.as(auth);
+    const asAdmin = config.admin ? await config.admin(request) : false;
+    const auth = asAdmin ? null : await config.auth(request);
+    const db = asAdmin ? config.data.admin() : config.data.as(auth);
 
     if (path.startsWith("rpc/")) return rpc(request, url, path.slice(4), db, auth);
 

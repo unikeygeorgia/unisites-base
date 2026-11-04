@@ -385,8 +385,9 @@ export function createRest(config) {
             if (p && p !== "public")
                 throw new RestError(406, "PGRST106", `only the public schema: ${p}`);
         }
-        const auth = await config.auth(request);
-        const db = config.data.as(auth);
+        const asAdmin = config.admin ? await config.admin(request) : false;
+        const auth = asAdmin ? null : await config.auth(request);
+        const db = asAdmin ? config.data.admin() : config.data.as(auth);
         if (path.startsWith("rpc/"))
             return rpc(request, url, path.slice(4), db, auth);
         const table = path;

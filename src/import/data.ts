@@ -125,11 +125,13 @@ async function people(query: Query, notes: Set<string>): Promise<{ sql: string; 
       coalesce(u.banned_until > now(), false) as banned, to_char(u.banned_until at time zone 'UTC', ${ISO}) as ban_until,
       coalesce(u.raw_user_meta_data->>'full_name', u.raw_user_meta_data->>'name') as name,
       coalesce(u.raw_user_meta_data->>'avatar_url', u.raw_user_meta_data->>'picture') as image,
+      coalesce(u.raw_user_meta_data, '{}'::jsonb)::text as meta,
       to_char(coalesce(u.created_at, now()) at time zone 'UTC', ${ISO}) as created,
       to_char(coalesce(u.updated_at, u.created_at, now()) at time zone 'UTC', ${ISO}) as updated,
       coalesce((select json_agg(json_build_array(i.provider, i.provider_id)) from auth.identities i where i.user_id = u.id), '[]'::json)::text as identities
     from auth.users u order by u.created_at, u.id`);
   const userRows: string[][] = [];
+  const metaRows: string[][] = [];
   const accountRows: string[][] = [];
   const seen = new Set<string>();
   const dropped = new Set<string>();
@@ -154,6 +156,14 @@ async function people(query: Query, notes: Set<string>): Promise<{ sql: string; 
       text(id), text(name), text(email), emailOk ? "1" : "0", u.image ? text(String(u.image)) : "NULL", text(String(u.created)), text(String(u.updated)),
       u.banned ? "1" : "0", u.banned && u.ban_until ? text(String(u.ban_until)) : "NULL", phone ? text(phone) : "NULL", phone ? (u.phone_ok ? "1" : "0") : "NULL",
     ]);
+    // Supabase's user_metadata, as /auth/v1 keeps it (base_0004.sql): name and avatar are _base_user's own.
+    try {
+      const meta = JSON.parse(String(u.meta ?? "{}")) as Record<string, unknown>;
+      for (const k of ["full_name", "name", "avatar_url", "picture", "email", "email_verified", "phone_verified", "sub"]) delete meta[k];
+      if (Object.keys(meta).length) metaRows.push([text(id), text(JSON.stringify(meta)), text(String(u.updated))]);
+    } catch {
+      notes.add(`people: ${id}'s user_metadata is not JSON, and is left out`);
+    }
     const pw = u.password ? String(u.password) : "";
     if (pw) {
       if (!/^\$2[aby]\$\d{2}\$/.test(pw)) notes.add(`people: ${id}'s password is not bcrypt; they set a new one`);
@@ -172,6 +182,7 @@ async function people(query: Query, notes: Set<string>): Promise<{ sql: string; 
   const sql = [
     ...inserts("_base_user", ["id", "name", "email", "emailVerified", "image", "createdAt", "updatedAt", "banned", "banExpires", "phoneNumber", "phoneNumberVerified"], userRows),
     ...inserts("_base_account", ["id", "accountId", "providerId", "userId", "password", "createdAt", "updatedAt"], accountRows),
+    ...inserts("_base_user_metadata", ["userId", "data", "updatedAt"], metaRows),
   ].join("\n\n");
   return { sql, rows: userRows.length, dropped };
 }

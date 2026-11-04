@@ -22,7 +22,7 @@ create publication supabase_realtime;
 insert into auth.users (id, email, phone, encrypted_password, email_confirmed_at, phone_confirmed_at, banned_until, raw_user_meta_data) values
   ('00000000-0000-0000-0000-000000000001', 'Ana@Example.com', null, '$2a$10$abcdefghijklmnopqrstuv', now(), null, null, '{"full_name": "Ana Beridze"}'),
   ('00000000-0000-0000-0000-000000000002', null, '995555000000', '', null, now(), null, '{}'),
-  ('00000000-0000-0000-0000-000000000003', 'gio@example.com', null, '$2a$10$abcdefghijklmnopqrstuv', null, null, now() + interval '1 day', '{"avatar_url": "https://x.test/g.png"}');
+  ('00000000-0000-0000-0000-000000000003', 'gio@example.com', null, '$2a$10$abcdefghijklmnopqrstuv', null, null, now() + interval '1 day', '{"avatar_url": "https://x.test/g.png", "must_change_password": true}');
 insert into auth.identities values
   ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'email', 'ana@test'),
   ('10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002', 'phone', '995555000000'),
