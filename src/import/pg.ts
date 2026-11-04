@@ -388,7 +388,7 @@ export function parseSelect(src: string): Select {
 
 /** An index as pg_get_indexdef prints it. */
 export function parseIndex(src: string): { unique: boolean; name: string; table: string; method: string; items: string; where?: E } {
-  const m = /^CREATE (UNIQUE )?INDEX (\S+) ON (?:ONLY )?(?:"?public"?\.)?("[^"]+"|\S+) USING (\w+) \((.*?)\)(?: INCLUDE \(.*?\))?(?: WHERE \((.*)\))?$/s.exec(src.trim());
+  const m = /^CREATE (UNIQUE )?INDEX (\S+) ON (?:ONLY )?(?:"?public"?\.)?("[^"]+"|\S+) USING (\w+) \((.*?)\)(?: INCLUDE \(.*?\))?(?: WHERE (.*))?$/s.exec(src.trim());
   if (!m) throw new Unsupported("an index of another form");
   return { unique: !!m[1], name: m[2]!, table: m[3]!.replace(/"/g, ""), method: m[4]!, items: m[5]!, where: m[6] ? parseExpr(m[6]) : undefined };
 }

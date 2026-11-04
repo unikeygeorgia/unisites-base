@@ -98,7 +98,9 @@ describe("rules", () => {
     expect(policyRule("notes", "(EXISTS ( SELECT 1 FROM m WHERE ((m.tenant_id = notes.tenant_id) AND (m.user_id = auth.uid()))))", ctx)).toBe(
       "exists(m, tenant_id = row.tenant_id && user_id = auth.id)",
     );
-    expect(() => policyRule("notes", "(owner IN ( SELECT m.user_id FROM m WHERE (m.tenant_id IN ( SELECT m2.tenant_id FROM m m2 WHERE (m2.user_id = m.user_id)))))", ctx)).toThrow(/around the inner one/);
+    expect(policyRule("notes", "(owner IN ( SELECT m.user_id FROM m WHERE (m.tenant_id IN ( SELECT m2.tenant_id FROM m m2 WHERE (m2.user_id = m.user_id)))))", ctx)).toBe(
+      "exists(m, user_id = row.owner && exists(m, tenant_id = up.tenant_id && user_id = up.user_id))",
+    );
   });
 });
 
@@ -378,6 +380,43 @@ describe("never more than Postgres", () => {
     expect(p.report.access.tables.t!.create).toBeUndefined();
     within(await p.reads("c"));
     expect(p.report.items.find((i) => i.area === "rules" && i.name === "c")!.note).toMatch(/editor/);
+  });
+
+  it("reads Unichat's chains: a list's tenant's membership, a table's own policy with a subquery, coalesce and now()", async () => {
+    const p = await project(`
+      create table public.tenants (id uuid primary key, owner uuid);
+      create table public.memberships (tenant_id uuid, user_id uuid, status text, primary key (tenant_id, user_id));
+      create table public.lists (id int primary key, tenant_id uuid);
+      create table public.list_members (id int primary key, list_id int);
+      create table public.notes (id int primary key, tenant_id uuid);
+      create table public.announcements (id int primary key, starts_at timestamptz, ends_at timestamptz);
+      create function public.my_tenant_ids() returns setof uuid language sql stable security definer as $$
+        select tenant_id from public.memberships where user_id = auth.uid() and coalesce(status, 'active') = 'active' $$;
+      alter table public.memberships enable row level security;
+      alter table public.lists enable row level security;
+      alter table public.list_members enable row level security;
+      alter table public.notes enable row level security;
+      alter table public.announcements enable row level security;
+      -- memberships' own policy has a subquery reading the membership's row: once it came out as tenant_id = tenant_id.
+      create policy m on public.memberships for select using (user_id = auth.uid() or tenant_id in (select t.id from public.tenants t where t.owner = auth.uid()));
+      create policy l on public.lists for select using (exists (select 1 from public.memberships m where m.tenant_id = lists.tenant_id and m.user_id = auth.uid() and coalesce(m.status, 'active') = 'active'));
+      create policy lm on public.list_members for select using (exists (select 1 from public.lists l where l.id = list_members.list_id and l.tenant_id in (select public.my_tenant_ids())));
+      create policy n on public.notes for select using (tenant_id in (select m.tenant_id from public.memberships m where m.user_id = auth.uid()));
+      create policy a on public.announcements for select using ((starts_at is null or starts_at <= now()) and (ends_at is null or ends_at > now()));
+      grant select on all tables in schema public to anon, authenticated;
+      insert into public.tenants values ('${T1}', '${U(3)}'), ('${T2}', null);
+      insert into public.memberships values ('${T1}', '${U(1)}', null), ('${T2}', '${U(1)}', 'left'), ('${T2}', '${U(2)}', 'active');
+      insert into public.lists values (1, '${T1}'), (2, '${T2}');
+      insert into public.list_members values (1, 1), (2, 2);
+      insert into public.notes values (1, '${T1}'), (2, '${T2}');
+      insert into public.announcements values (1, null, null), (2, now() + interval '1 day', null), (3, null, now() - interval '1 day');
+    `);
+    for (const t of ["lists", "list_members", "notes", "announcements"]) {
+      same(await p.reads(t));
+      expect(p.level(t), t).not.toBe("manual");
+    }
+    expect(p.report.access.tables.list_members!.list).toContain("up.tenant_id");
+    expect(JSON.stringify(p.report.access)).not.toMatch(/\b(\w+) = \1\b/);
   });
 
   it("never writes a name access.json cannot read back", async () => {

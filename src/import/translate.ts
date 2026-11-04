@@ -17,7 +17,8 @@ type R =
   | { k: "and" | "or"; items: R[] }
   | { k: "not"; x: R }
   | { k: "in"; l: R; items: R[] }
-  | { k: "exists"; table: string; d: number; where: R };
+  | { k: "exists"; table: string; d: number; where: R }
+  | { k: "now" };
 
 /** An argument of an inlined function: already a rule, in the caller's scope. */
 type Bound = { k: "bound"; r: R };
@@ -163,7 +164,8 @@ class Translator {
     if (s.from.schema && s.from.schema !== "public") throw new Unsupported(`the table ${s.from.schema}.${s.from.table}`);
     const t = this.ctx.tables.get(s.from.table);
     if (!t) throw new Unsupported(`the table ${s.from.table}, which is not served`);
-    const d = scopes.length;
+    // One deeper than the scope it is in: a table's own policies start at its depth, not at 0.
+    const d = (scopes.at(-1)?.d ?? -1) + 1;
     const inner = [...scopes, { table: s.from.table, alias: s.from.alias, d }];
     if (s.definer) return { inner, guard: TRUE };
     const rule = this.rule(t.name, "list", d);
@@ -294,6 +296,7 @@ class Translator {
     const name = e.name.join(".");
     if (name === "auth.uid") return { k: "auth", f: "id" };
     if (name === "auth.email") return { k: "auth", f: "email" };
+    if (!bool && !e.args.length && ["now", "current_timestamp", "pg_catalog.now"].includes(name)) return { k: "now" };
     if ((name === "coalesce" || name === "pg_catalog.coalesce") && bool && e.args.length === 2) {
       const [a, last] = e.args as [E, E];
       if (last.k === "lit" && last.v === false) {
@@ -401,6 +404,24 @@ class Translator {
       const signedIn = v.v === "authenticated" ? true : v.v === "anon" ? false : null;
       if (signedIn === null) return { k: "lit", v: e.op === "<>" };
       return signedIn === (e.op === "=") ? SIGNED_IN : SIGNED_OUT;
+    }
+    // coalesce(x, 'a') = 'b': when x is NULL, 'a' = 'b' (worked out here); else x = 'b'.
+    const co = (x: E) => x.k === "fn" && /^(pg_catalog\.)?coalesce$/.test(x.name.join(".")) && x.args.length === 2 && unCast(x.args[1]!).k === "lit";
+    if (co(e.l) || co(e.r)) {
+      const [c, other] = (co(e.l) ? [e.l, e.r] : [e.r, e.l]) as [Extract<E, { k: "fn" }>, E];
+      const fallback = (unCast(c.args[1]!) as { v: unknown }).v;
+      const v = unCast(other);
+      if (v.k !== "lit" || v.v === null || fallback === null || typeof v.v !== typeof fallback) throw new Unsupported("coalesce() compared with something other than a value of its kind");
+      const op = co(e.l) ? e.op : ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as Record<string, string>)[e.op] ?? e.op;
+      const a = fallback as string | number | boolean;
+      const b = v.v as string | number | boolean;
+      const holds = { "=": a === b, "<>": a !== b, "<": a < b, "<=": a <= b, ">": a > b, ">=": a >= b }[op as "="];
+      const x = this.val(c.args[0]!, scopes);
+      const nul: R = { k: "lit", v: null };
+      return or([
+        and([{ k: "cmp", op: "=", l: x, r: nul }, { k: "lit", v: !!holds }]),
+        and([{ k: "cmp", op: "!=", l: x, r: nul }, { k: "cmp", op: op === "<>" ? "!=" : op, l: x, r: v }]),
+      ]);
     }
     // x = NULL is NULL in Postgres, not IS NULL.
     if (unCast(e.l).k === "lit" && (unCast(e.l) as { v: unknown }).v === null) throw new Unsupported("a comparison with NULL");
@@ -527,8 +548,11 @@ function print(r: R, d: number, top = false): string {
     case "pcol":
       return d > 0 ? `row.${name(r.c)}` : name(r.c);
     case "icol":
-      if (r.d !== d) throw new Unsupported("a column of a subquery around the inner one (access.json reaches only the innermost table and the row)");
-      return name(r.c);
+      if (r.d === d) return name(r.c);
+      if (r.d === d - 1) return `up.${name(r.c)}`;
+      throw new Unsupported("a column of a subquery two around the inner one (access.json reaches the row, its own table and the one around it)");
+    case "now":
+      return "now()";
     case "auth":
       return `auth.${name(r.f)}`;
     case "lit":

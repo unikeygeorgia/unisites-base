@@ -16,8 +16,10 @@
  *   status in ['draft', 'sent']
  *
  * A bare name is a column of the row (inside exists(), of that table; there
- * `row.<column>` is the outer row). `auth.<field>` is the session's field,
- * null when signed out. Every value goes to SQL as a parameter, never as
+ * `row.<column>` is the outer row, and in an exists() inside another,
+ * `up.<column>` is the row of the one around it). `auth.<field>` is the
+ * session's field, null when signed out. `now()` is the time, as ISO text
+ * (2026-11-04T12:00:00.000Z), the way imported timestamps are kept. Every value goes to SQL as a parameter, never as
  * text, and every name is checked before it is quoted.
  */
 export type Rule = string | null;
@@ -73,6 +75,8 @@ export type Node = {
     k: "exists";
     table: string;
     where: Node;
+} | {
+    k: "now";
 };
 /** Parses a rule; "" is everyone, and is the literal true. */
 export declare function parseRule(src: string): Node;

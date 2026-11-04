@@ -16,8 +16,10 @@
  *   status in ['draft', 'sent']
  *
  * A bare name is a column of the row (inside exists(), of that table; there
- * `row.<column>` is the outer row). `auth.<field>` is the session's field,
- * null when signed out. Every value goes to SQL as a parameter, never as
+ * `row.<column>` is the outer row, and in an exists() inside another,
+ * `up.<column>` is the row of the one around it). `auth.<field>` is the
+ * session's field, null when signed out. `now()` is the time, as ISO text
+ * (2026-11-04T12:00:00.000Z), the way imported timestamps are kept. Every value goes to SQL as a parameter, never as
  * text, and every name is checked before it is quoted.
  */
 
@@ -88,7 +90,8 @@ export type Node =
   | { k: "in"; l: Node; items: Node[] }
   | { k: "and" | "or"; items: Node[] }
   | { k: "not"; x: Node }
-  | { k: "exists"; table: string; where: Node };
+  | { k: "exists"; table: string; where: Node }
+  | { k: "now" };
 
 type Token = { t: "op" | "str" | "num" | "name"; v: string; at: number };
 
@@ -212,8 +215,13 @@ export function parseRule(src: string): Node {
         expect(")");
         return { k: "exists", table: table!.v, where };
       }
+      if (t.v === "now" && peek()?.t === "op" && peek()!.v === "(") {
+        p++;
+        expect(")");
+        return { k: "now" };
+      }
       const path = t.v.split(".");
-      if (path.length > 2 || (path.length === 2 && path[0] !== "auth" && path[0] !== "row")) fail(`unknown name ${t.v}`);
+      if (path.length > 2 || (path.length === 2 && path[0] !== "auth" && path[0] !== "row" && path[0] !== "up")) fail(`unknown name ${t.v}`);
       return { k: "name", path };
     }
     return fail(`unexpected ${t.v}`);
@@ -249,7 +257,8 @@ export function compileRule(node: Node, c: Compile): Sql {
   let alias = 0;
   const params: unknown[] = [];
 
-  function walk(n: Node, inner: { alias: string; table: string } | null): string {
+  type Inner = { alias: string; table: string; up: Inner | null };
+  function walk(n: Node, inner: Inner | null): string {
     switch (n.k) {
       case "lit":
         if (n.v === null) return "NULL";
@@ -261,6 +270,13 @@ export function compileRule(node: Node, c: Compile): Sql {
           return "?";
         }
         const column = n.path.length === 2 ? n.path[1]! : n.path[0]!;
+        if (n.path[0] === "up" && n.path.length === 2) {
+          const around = inner?.up;
+          if (!around) throw new AccessError("bad_rule", "up.<column> is only for an exists() inside another");
+          const known = c.columns?.(around.table);
+          if (known && !known.has(column)) throw new AccessError("unknown_column", `${around.table}.${column}`);
+          return `"${around.alias}".${quote(column)}`;
+        }
         if (n.path.length === 1 && inner) {
           const known = c.columns?.(inner.table);
           if (known && !known.has(column)) throw new AccessError("unknown_column", `${inner.table}.${column}`);
@@ -289,13 +305,15 @@ export function compileRule(node: Node, c: Compile): Sql {
       case "and":
       case "or":
         return `(${n.items.map((i) => walk(i, inner)).join(n.k === "and" ? " AND " : " OR ")})`;
+      case "now":
+        return "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
       case "not":
         return `(NOT ${walk(n.x, inner)})`;
       case "exists": {
         if (!c.columns?.(n.table) && c.columns) throw new AccessError("unknown_table", n.table);
         // $ is never in a table's name, so the alias cannot be one.
         const a = `$e${++alias}`;
-        const where = walk(n.where, { alias: a, table: n.table });
+        const where = walk(n.where, { alias: a, table: n.table, up: inner });
         return `EXISTS (SELECT 1 FROM ${quote(n.table)} AS "${a}" WHERE ${where})`;
       }
     }
@@ -312,6 +330,7 @@ export function namesIn(node: Node): { columns: Set<string>; auth: Set<string>; 
     switch (n.k) {
       case "name":
         if (n.path[0] === "auth" && n.path.length === 2) out.auth.add(n.path[1]!);
+        else if (n.path[0] === "up") return;
         else if (n.path.length === 2 || !inner) out.columns.add(n.path[n.path.length - 1]!);
         return;
       case "cmp":
@@ -334,6 +353,7 @@ export function namesIn(node: Node): { columns: Set<string>; auth: Set<string>; 
         walk(n.where, true);
         return;
       case "lit":
+      case "now":
         return;
     }
   }

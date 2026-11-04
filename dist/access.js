@@ -16,8 +16,10 @@
  *   status in ['draft', 'sent']
  *
  * A bare name is a column of the row (inside exists(), of that table; there
- * `row.<column>` is the outer row). `auth.<field>` is the session's field,
- * null when signed out. Every value goes to SQL as a parameter, never as
+ * `row.<column>` is the outer row, and in an exists() inside another,
+ * `up.<column>` is the row of the one around it). `auth.<field>` is the
+ * session's field, null when signed out. `now()` is the time, as ISO text
+ * (2026-11-04T12:00:00.000Z), the way imported timestamps are kept. Every value goes to SQL as a parameter, never as
  * text, and every name is checked before it is quoted.
  */
 export const OPERATIONS = ["list", "view", "create", "update", "updateCheck", "delete"];
@@ -169,8 +171,13 @@ export function parseRule(src) {
                 expect(")");
                 return { k: "exists", table: table.v, where };
             }
+            if (t.v === "now" && peek()?.t === "op" && peek().v === "(") {
+                p++;
+                expect(")");
+                return { k: "now" };
+            }
             const path = t.v.split(".");
-            if (path.length > 2 || (path.length === 2 && path[0] !== "auth" && path[0] !== "row"))
+            if (path.length > 2 || (path.length === 2 && path[0] !== "auth" && path[0] !== "row" && path[0] !== "up"))
                 fail(`unknown name ${t.v}`);
             return { k: "name", path };
         }
@@ -206,6 +213,15 @@ export function compileRule(node, c) {
                     return "?";
                 }
                 const column = n.path.length === 2 ? n.path[1] : n.path[0];
+                if (n.path[0] === "up" && n.path.length === 2) {
+                    const around = inner?.up;
+                    if (!around)
+                        throw new AccessError("bad_rule", "up.<column> is only for an exists() inside another");
+                    const known = c.columns?.(around.table);
+                    if (known && !known.has(column))
+                        throw new AccessError("unknown_column", `${around.table}.${column}`);
+                    return `"${around.alias}".${quote(column)}`;
+                }
                 if (n.path.length === 1 && inner) {
                     const known = c.columns?.(inner.table);
                     if (known && !known.has(column))
@@ -237,6 +253,8 @@ export function compileRule(node, c) {
             case "and":
             case "or":
                 return `(${n.items.map((i) => walk(i, inner)).join(n.k === "and" ? " AND " : " OR ")})`;
+            case "now":
+                return "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
             case "not":
                 return `(NOT ${walk(n.x, inner)})`;
             case "exists": {
@@ -244,7 +262,7 @@ export function compileRule(node, c) {
                     throw new AccessError("unknown_table", n.table);
                 // $ is never in a table's name, so the alias cannot be one.
                 const a = `$e${++alias}`;
-                const where = walk(n.where, { alias: a, table: n.table });
+                const where = walk(n.where, { alias: a, table: n.table, up: inner });
                 return `EXISTS (SELECT 1 FROM ${quote(n.table)} AS "${a}" WHERE ${where})`;
             }
         }
@@ -260,6 +278,8 @@ export function namesIn(node) {
             case "name":
                 if (n.path[0] === "auth" && n.path.length === 2)
                     out.auth.add(n.path[1]);
+                else if (n.path[0] === "up")
+                    return;
                 else if (n.path.length === 2 || !inner)
                     out.columns.add(n.path[n.path.length - 1]);
                 return;
@@ -283,6 +303,7 @@ export function namesIn(node) {
                 walk(n.where, true);
                 return;
             case "lit":
+            case "now":
                 return;
         }
     }

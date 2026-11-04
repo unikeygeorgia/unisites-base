@@ -471,3 +471,22 @@ describe("sees", () => {
     }
   });
 });
+
+describe("up and now()", () => {
+  it("reads the row of the exists() around, and the time", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`
+      create table m (tenant_id text, user_id text);
+      create table lists (id integer primary key, tenant_id text);
+      create table items (id integer primary key, list_id integer, due text);
+      insert into m values ('t1', 'ana'); insert into lists values (1, 't1'), (2, 't2');
+      insert into items values (1, 1, '2000-01-01T00:00:00.000Z'), (2, 2, '2000-01-01T00:00:00.000Z'), (3, 1, '2999-01-01T00:00:00.000Z');
+    `);
+    const exec: Exec = async (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    const data = createData({ exec, access: { tables: { items: { list: "exists(lists, id = row.list_id && exists(m, tenant_id = up.tenant_id && user_id = auth.id)) && due <= now()" } } } });
+    expect(ids(await data.as({ id: "ana" }).list("items"))).toEqual([1]);
+    expect(ids(await data.as({ id: "gio" }).list("items"))).toEqual([]);
+    const outside = createData({ exec, access: { tables: { items: { list: "up.list_id = 1" } } } });
+    expect(await code(outside.as({ id: "ana" }).list("items"))).toBe("bad_rule");
+  });
+});
