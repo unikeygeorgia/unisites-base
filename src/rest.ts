@@ -150,7 +150,7 @@ function coerce(desc: Described, column: string, value: string): unknown {
 }
 
 /** `[not.]op.value` for one column. */
-function parseCondition(desc: Described, column: string, expr: string): Filter {
+export function parseCondition(desc: Described, column: string, expr: string): Filter {
   if (!isName(column)) throw new RestError(400, "42703", `column ${column} does not exist`);
   let negate = false;
   if (expr.startsWith("not.")) {
@@ -569,20 +569,7 @@ export function createRest(config: RestConfig) {
       }
       embedded.set(item, found);
     }
-    const kinds = new Map(desc.columns.map((c) => [c.name, /BOOL/i.test(c.type) ? "bool" : /JSON/i.test(c.type) ? "json" : ""]));
-    const value = (column: string, v: unknown) => {
-      if (v === null || v === undefined) return v ?? null;
-      const kind = kinds.get(column);
-      if (kind === "bool") return v === 1 || v === true || v === "1" || v === "true";
-      if (kind === "json" && typeof v === "string") {
-        try {
-          return JSON.parse(v);
-        } catch {
-          return v;
-        }
-      }
-      return v;
-    };
+    const value = valueOf(desc);
     return rows.map((row) => {
       const out: Row = {};
       for (const item of select) {
@@ -600,6 +587,24 @@ export function createRest(config: RestConfig) {
   }
 
   return { handler };
+}
+
+/** A value as Postgres would answer it: BOOLEAN as true or false, JSON parsed. */
+export function valueOf(desc: Described): (column: string, v: unknown) => unknown {
+  const kinds = new Map(desc.columns.map((c) => [c.name, /BOOL/i.test(c.type) ? "bool" : /JSON/i.test(c.type) ? "json" : ""]));
+  return (column, v) => {
+    if (v === null || v === undefined) return null;
+    const kind = kinds.get(column);
+    if (kind === "bool") return v === 1 || v === true || v === "1" || v === "true";
+    if (kind === "json" && typeof v === "string") {
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v;
+      }
+    }
+    return v;
+  };
 }
 
 function contentRange(offset: number, n: number, total: number | undefined): string {

@@ -61,6 +61,22 @@ export type DataConfig = {
     access: Access;
     /** Most rows one list returns (and one create takes). */
     maxRows?: number;
+    /**
+     * Every write's rows, after it is done, for Realtime (unisites-base/realtime): whole rows,
+     * hidden columns too, so the room can check each person's rules. Writes through admin() too.
+     */
+    onChange?: (changes: Change[]) => void | Promise<void>;
+};
+/**
+ * One row a write changed. `record` is the row after (INSERT, UPDATE), `old` the row before:
+ * a DELETE's whole row, an UPDATE's key only (as Postgres sends it without REPLICA IDENTITY FULL).
+ */
+export type Change = {
+    table: string;
+    type: "INSERT" | "UPDATE" | "DELETE";
+    record: Row | null;
+    old: Row | null;
+    at: string;
 };
 export type Table = {
     columns: string[];
@@ -135,6 +151,11 @@ export type Data = {
         rows?: Row[];
     }>;
     describe(table: string): Promise<Described>;
+    /**
+     * The row as this person may see it (without hidden columns), or null when list's rule, or the
+     * filters, keep it from them. The row need not be in the table: Realtime asks about a deleted one.
+     */
+    sees(table: string, row: Row, where?: Filter[]): Promise<Row | null>;
 };
 export declare function createData(config: DataConfig): {
     /** The data as this person may see it; null is signed out. */

@@ -102,7 +102,7 @@ function coerce(desc, column, value) {
     return value;
 }
 /** `[not.]op.value` for one column. */
-function parseCondition(desc, column, expr) {
+export function parseCondition(desc, column, expr) {
     if (!isName(column))
         throw new RestError(400, "42703", `column ${column} does not exist`);
     let negate = false;
@@ -536,23 +536,7 @@ export function createRest(config) {
             }
             embedded.set(item, found);
         }
-        const kinds = new Map(desc.columns.map((c) => [c.name, /BOOL/i.test(c.type) ? "bool" : /JSON/i.test(c.type) ? "json" : ""]));
-        const value = (column, v) => {
-            if (v === null || v === undefined)
-                return v ?? null;
-            const kind = kinds.get(column);
-            if (kind === "bool")
-                return v === 1 || v === true || v === "1" || v === "true";
-            if (kind === "json" && typeof v === "string") {
-                try {
-                    return JSON.parse(v);
-                }
-                catch {
-                    return v;
-                }
-            }
-            return v;
-        };
+        const value = valueOf(desc);
         return rows.map((row) => {
             const out = {};
             for (const item of select) {
@@ -572,6 +556,26 @@ export function createRest(config) {
         });
     }
     return { handler };
+}
+/** A value as Postgres would answer it: BOOLEAN as true or false, JSON parsed. */
+export function valueOf(desc) {
+    const kinds = new Map(desc.columns.map((c) => [c.name, /BOOL/i.test(c.type) ? "bool" : /JSON/i.test(c.type) ? "json" : ""]));
+    return (column, v) => {
+        if (v === null || v === undefined)
+            return null;
+        const kind = kinds.get(column);
+        if (kind === "bool")
+            return v === 1 || v === true || v === "1" || v === "true";
+        if (kind === "json" && typeof v === "string") {
+            try {
+                return JSON.parse(v);
+            }
+            catch {
+                return v;
+            }
+        }
+        return v;
+    };
 }
 function contentRange(offset, n, total) {
     const t = total === undefined ? "*" : String(total);

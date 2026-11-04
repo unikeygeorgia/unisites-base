@@ -188,6 +188,52 @@ const { data } = await supabase.from("memberships").select("role, tenants(id, na
 - **What a person can learn, as in Postgres:** a UNIQUE collision (409), `ignoreDuplicates` with a
   count, or an upsert refused on a row they cannot see, says that such a row exists.
 
+### Realtime: `supabase.channel(...)`
+
+`unisites-base/realtime` speaks realtime-js's own protocol, so `postgres_changes` subscriptions
+work unchanged. A room is a Durable Object with hibernating WebSockets. Every write through `data`
+(`as` and `admin`) hands its rows to `onChange`, and the room sends each row only to the sockets
+whose person `list`'s rule lets see it, without hidden columns, and through their filter.
+
+```ts
+import { createRealtime, createRoom } from "unisites-base/realtime";
+
+export const Realtime = createRoom((env: Env) => ({ data: createData({ exec: d1(env.DB), access }) }));
+
+const realtime = createRealtime({ namespace: env.REALTIME, auth });
+const data = createData({ exec: d1(env.DB), access, onChange: (changes) => ctx.waitUntil(realtime.notify(changes)) });
+if (url.pathname.startsWith("/realtime/v1/")) return realtime.handler(request);
+```
+
+```jsonc
+// wrangler.jsonc
+"durable_objects": { "bindings": [{ "name": "REALTIME", "class_name": "Realtime" }] },
+"migrations": [{ "tag": "realtime", "new_sqlite_classes": ["Realtime"] }]
+```
+
+```ts
+supabase
+  .channel(`inbox:${tenantId}`)
+  .on("postgres_changes", { event: "INSERT", schema: "public", table: "messages", filter: `tenant_id=eq.${tenantId}` }, (p) => …)
+  .subscribe();
+```
+
+- **Takes:** one table of `public`, `INSERT`, `UPDATE`, `DELETE` or `*`, and one filter
+  `column=op.value` with `eq neq lt lte gt gte in`, as Supabase does. A table not served, a hidden
+  or missing column, or another filter is a `CHANNEL_ERROR`.
+- **Old rows:** an UPDATE's `old` is the key (as Postgres without `REPLICA IDENTITY FULL`); a
+  DELETE's is the whole row the person may see. Unlike Supabase, a DELETE also goes through the
+  rules and the filter.
+- **Sockets:** only from the project's own origin (and `origins`); a socket lives at most an hour
+  (`maxAge`), after which realtime-js joins again and the session is checked again;
+  `realtime.disconnect(userId)` closes a person's sockets at once (signing out everywhere, a block).
+  At most 20 channels on a socket, 10 subscriptions on a channel (within Cloudflare's 2 KB), 10
+  sockets for a person (or a signed-out address), 2,000 in a room (`maxSockets`), 50 messages a
+  second. Each change is checked once for each person in the room, whatever their filters.
+- **Only through `data`:** a row a trigger, a cascade or raw SQL changes sends nothing. A person's
+  session fields are the ones they joined with, until the socket's hour is up or `disconnect`.
+- **Not yet:** broadcast and presence.
+
 `npx unisites-base check` checks `access.json` against `migrations/` (no such table or column, base's
 own tables opened, writes anyone may make, columns that look secret left readable, a rule that
 trusts what a person writes about themself) and lists every `data.admin()` and `env.DB` in the code.

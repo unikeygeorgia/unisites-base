@@ -67,7 +67,18 @@ export type DataConfig = {
   access: Access;
   /** Most rows one list returns (and one create takes). */
   maxRows?: number;
+  /**
+   * Every write's rows, after it is done, for Realtime (unisites-base/realtime): whole rows,
+   * hidden columns too, so the room can check each person's rules. Writes through admin() too.
+   */
+  onChange?: (changes: Change[]) => void | Promise<void>;
 };
+
+/**
+ * One row a write changed. `record` is the row after (INSERT, UPDATE), `old` the row before:
+ * a DELETE's whole row, an UPDATE's key only (as Postgres sends it without REPLICA IDENTITY FULL).
+ */
+export type Change = { table: string; type: "INSERT" | "UPDATE" | "DELETE"; record: Row | null; old: Row | null; at: string };
 
 export type Table = {
   columns: string[];
@@ -123,6 +134,11 @@ export type Data = {
    */
   upsert(table: string, rows: Row | Row[], options?: Upsert): Promise<{ count: number; rows?: Row[] }>;
   describe(table: string): Promise<Described>;
+  /**
+   * The row as this person may see it (without hidden columns), or null when list's rule, or the
+   * filters, keep it from them. The row need not be in the table: Realtime asks about a deleted one.
+   */
+  sees(table: string, row: Row, where?: Filter[]): Promise<Row | null>;
 };
 
 const MAX_IN = 1000;
@@ -291,22 +307,25 @@ export function createData(config: DataConfig) {
       else if (node.k === "not") await preload(node.x);
     }
 
-    const fromTable = (name: string) => (column: string) => ({ sql: `${quote(name)}.${quote(column)}`, params: [] });
+    const fromTable = (name: string) => (column: string): Sql => ({ sql: `${quote(name)}.${quote(column)}`, params: [] });
 
-    function filterSql(name: string, t: Table, rules: TableAccess, f: Filter, depth = 0): Sql {
+    // ref: where a column's value is; the table's row, or a row given as parameters (sees()).
+    function filterSql(name: string, t: Table, rules: TableAccess, f: Filter, depth = 0, ref = fromTable(name)): Sql {
       if (depth > 8) throw new AccessError("bad_value", "filters nest too deep");
       if (f === null || typeof f !== "object" || Array.isArray(f)) throw new AccessError("bad_value", "a filter is an object");
       if ("or" in f || "and" in f) {
-        const items = ("or" in f ? f.or : f.and).map((x) => filterSql(name, t, rules, x, depth + 1));
+        const items = ("or" in f ? f.or : f.and).map((x) => filterSql(name, t, rules, x, depth + 1, ref));
         if (!items.length) return { sql: "or" in f ? "0" : "1", params: [] };
         return { sql: `(${items.map((i) => i.sql).join("or" in f ? " OR " : " AND ")})`, params: items.flatMap((i) => i.params) };
       }
       if ("not" in f) {
-        const x = filterSql(name, t, rules, f.not, depth + 1);
+        const x = filterSql(name, t, rules, f.not, depth + 1, ref);
         return { sql: `(NOT coalesce(${x.sql}, 0))`, params: x.params };
       }
       columnsFor(name, t, rules, [f.column], "read");
-      const col = `${quote(name)}.${quote(f.column)}`;
+      const c = ref(f.column);
+      const col = c.sql;
+      const at = (sql: string, params: unknown[] = []): Sql => ({ sql, params: [...c.params, ...params] });
       const scalar = (v: unknown) => {
         if (v !== null && typeof v === "object") throw new AccessError("bad_value", `${f.column}: a value, not an object`);
         return bind(v);
@@ -319,18 +338,18 @@ export function createData(config: DataConfig) {
         case "lt":
         case "lte": {
           const op = { eq: "=", neq: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" }[f.op];
-          return { sql: `(${col} ${op} ?)`, params: [scalar(f.value)] };
+          return at(`(${col} ${op} ?)`, [scalar(f.value)]);
         }
         case "in": {
           if (!Array.isArray(f.value)) throw new AccessError("bad_value", `${f.column}: in takes a list`);
           if (f.value.length > MAX_IN) throw new AccessError("too_many", `${f.column}: in takes at most ${MAX_IN}`);
           if (!f.value.length) return { sql: "0", params: [] };
           // One parameter for the whole list: D1 takes at most 100 in a statement.
-          return { sql: `(${col} IN (SELECT value FROM json_each(?)))`, params: [json(f.value.map(scalar))] };
+          return at(`(${col} IN (SELECT value FROM json_each(?)))`, [json(f.value.map(scalar))]);
         }
         case "is": {
-          if (f.value === null) return { sql: `(${col} IS NULL)`, params: [] };
-          if (f.value === true || f.value === false) return { sql: `(${col} IS ?)`, params: [f.value ? 1 : 0] };
+          if (f.value === null) return at(`(${col} IS NULL)`);
+          if (f.value === true || f.value === false) return at(`(${col} IS ?)`, [f.value ? 1 : 0]);
           throw new AccessError("bad_value", `${f.column}: is takes null, true or false`);
         }
         case "like":
@@ -340,20 +359,20 @@ export function createData(config: DataConfig) {
           // ilike is not (LIKE, for ASCII; Georgian has no case).
           if (f.op === "like") {
             const glob = [...f.value].map((ch) => (ch === "%" || ch === "*" ? "*" : ch === "_" ? "?" : /[[\]?]/.test(ch) ? `[${ch}]` : ch)).join("");
-            return { sql: `(${col} GLOB ?)`, params: [glob] };
+            return at(`(${col} GLOB ?)`, [glob]);
           }
           const like = [...f.value].map((ch) => (ch === "*" ? "%" : ch === "\\" ? "\\\\" : ch)).join("");
-          return { sql: `(${col} LIKE ? ESCAPE '\\')`, params: [like] };
+          return at(`(${col} LIKE ? ESCAPE '\\')`, [like]);
         }
         default:
           throw new AccessError("bad_value", `unknown filter ${String((f as { op: unknown }).op)}`);
       }
     }
 
-    function whereSql(name: string, t: Table, rules: TableAccess, where: Filter[] | undefined): Sql {
+    function whereSql(name: string, t: Table, rules: TableAccess, where: Filter[] | undefined, ref = fromTable(name)): Sql {
       if (where !== undefined && !Array.isArray(where)) throw new AccessError("bad_value", "filters are a list");
       if (leaves(where ?? []) > MAX_FILTERS) throw new AccessError("too_many", `at most ${MAX_FILTERS} filters`);
-      const parts = (where ?? []).map((f) => filterSql(name, t, rules, f));
+      const parts = (where ?? []).map((f) => filterSql(name, t, rules, f, 0, ref));
       return { sql: parts.length ? parts.map((p) => p.sql).join(" AND ") : "1", params: parts.flatMap((p) => p.params) };
     }
 
@@ -384,6 +403,24 @@ export function createData(config: DataConfig) {
         sql: `(CASE WHEN (SELECT count(*) FROM ${quote(name)} WHERE ${cond.sql}) > 1 THEN abs(CASE WHEN typeof(${row}) IS NULL THEN 0 ELSE -9223372036854775807 - 1 END) ELSE 1 END)`,
         params: cond.params,
       };
+    }
+
+    const pick = (row: Row, cols: string[]): Row => Object.fromEntries(cols.map((c) => [c, row[c] ?? null]));
+
+    // What a statement returns: the caller's columns, or every column when Realtime wants the rows.
+    function returned(t: Table, rules: TableAccess, returning: boolean | undefined): { sql: string; cols: string[] } {
+      const cols = config.onChange ? t.columns : returning ? visible(t, rules) : [];
+      return { sql: cols.length ? cols.map(quote).join(", ") : "1 AS _", cols: returning ? visible(t, rules) : [] };
+    }
+
+    async function emit(changes: Change[]): Promise<void> {
+      if (!config.onChange || !changes.length) return;
+      try {
+        await config.onChange(changes);
+      } catch (e) {
+        // The write is done; a room that could not be told must not undo it in the caller's eyes.
+        console.error("onChange:", e);
+      }
     }
 
     async function insert(name: string, input: Row | Row[], options: { returning?: boolean }, conflict?: Upsert) {
@@ -422,8 +459,9 @@ export function createData(config: DataConfig) {
 
       let onConflict = "";
       let changed: unknown[] = [];
+      let target: string[] = [];
       if (conflict) {
-        const target = conflict.onConflict?.length ? conflict.onConflict : t.key;
+        target = conflict.onConflict?.length ? conflict.onConflict : t.key;
         if (target.includes("rowid")) throw new AccessError("bad_value", `${name} has no key; name the columns it may collide on`);
         columnsFor(name, t, rules, target, "read");
         if (conflict.ignoreDuplicates) onConflict = ` ON CONFLICT (${target.map(quote).join(", ")}) DO NOTHING`;
@@ -446,17 +484,39 @@ export function createData(config: DataConfig) {
         }
       }
 
-      const back = options.returning ? visible(t, rules) : [];
+      // Which rows an upsert will change rather than add, for Realtime's INSERT or UPDATE. Read
+      // before the write, so a row added between the two is called an UPDATE: only the label.
+      let existed = new Set<string>();
+      if (config.onChange && conflict && !conflict.ignoreDuplicates) {
+        const keys = json(rows.map((r) => target.map((c) => stored(t, c, r[c]))));
+        // A join on the key, so its index is used rather than every row read.
+        const found = await exec(
+          `SELECT ${target.map((c) => `${quote(name)}.${quote(c)}`).join(", ")} FROM json_each(?) AS "$k" JOIN ${quote(name)} ON ` +
+            target.map((c, i) => `${quote(name)}.${quote(c)} = json_extract("$k".value, '$[${i}]')`).join(" AND "),
+          [keys],
+        );
+        existed = new Set(found.map((f) => JSON.stringify(target.map((c) => f[c]))));
+      }
+
+      const back = returned(t, rules, options.returning);
       const out = await exec(
         `WITH "$v" AS MATERIALIZED (SELECT ${cols.map(picked).join(", ")} FROM json_each(?)) ` +
           `INSERT OR ABORT INTO ${quote(name)} (${cols.map(quote).join(", ")}) ` +
           `SELECT ${cols.map(vName).join(", ")} FROM "$v" ` +
           `WHERE CASE WHEN NOT EXISTS (SELECT 1 FROM "$v" WHERE NOT (${allowed.sql})) THEN 1 ELSE ${REFUSED(vName(cols[0]!))} END` +
-          `${onConflict} RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`,
+          `${onConflict} RETURNING ${back.sql}`,
         [payload, ...allowed.params, ...changed],
       );
       if (!conflict?.ignoreDuplicates && out.length !== rows.length) throw new AccessError("refused", `create on ${name}`);
-      return { count: out.length, ...(options.returning ? { rows: out } : {}) };
+      const at = new Date().toISOString();
+      await emit(
+        out.map((r) =>
+          existed.has(JSON.stringify(target.map((c) => r[c])))
+            ? { table: name, type: "UPDATE" as const, record: r, old: pick(r, t.key.filter((k) => k !== "rowid")), at }
+            : { table: name, type: "INSERT" as const, record: r, old: null, at },
+        ),
+      );
+      return { count: out.length, ...(options.returning ? { rows: out.map((r) => pick(r, back.cols)) } : {}) };
     }
 
     return {
@@ -539,13 +599,14 @@ export function createData(config: DataConfig) {
         if (options.returning) parts.push(await ruleSql(name, rules, "list", fromNew));
         if (options.one) parts.push(moreThanOne(name, t, and(...parts)));
         const cond = and(...parts);
-        const back = options.returning ? visible(t, rules) : [];
+        const back = returned(t, rules, options.returning);
         const out = await exec(
-          `UPDATE OR ABORT ${quote(name)} SET ${cols.map((c) => `${quote(c)} = ?`).join(", ")} WHERE ${cond.sql} ` +
-            `RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`,
+          `UPDATE OR ABORT ${quote(name)} SET ${cols.map((c) => `${quote(c)} = ?`).join(", ")} WHERE ${cond.sql} RETURNING ${back.sql}`,
           [...cols.map((c) => next.get(c)), ...cond.params],
         );
-        return { count: out.length, ...(options.returning ? { rows: out } : {}) };
+        const at = new Date().toISOString();
+        await emit(out.map((r) => ({ table: name, type: "UPDATE" as const, record: r, old: pick(r, t.key.filter((k) => k !== "rowid")), at })));
+        return { count: out.length, ...(options.returning ? { rows: out.map((r) => pick(r, back.cols)) } : {}) };
       },
 
       async delete(name, where, options = {}) {
@@ -559,12 +620,29 @@ export function createData(config: DataConfig) {
         ];
         if (options.one) parts.push(moreThanOne(name, t, and(...parts)));
         const cond = and(...parts);
-        const back = options.returning ? visible(t, rules) : [];
-        const out = await exec(
-          `DELETE FROM ${quote(name)} WHERE ${cond.sql} RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`,
-          cond.params,
-        );
-        return { count: out.length, ...(options.returning ? { rows: out } : {}) };
+        const back = returned(t, rules, options.returning);
+        const out = await exec(`DELETE FROM ${quote(name)} WHERE ${cond.sql} RETURNING ${back.sql}`, cond.params);
+        const at = new Date().toISOString();
+        await emit(out.map((r) => ({ table: name, type: "DELETE" as const, record: null, old: r, at })));
+        return { count: out.length, ...(options.returning ? { rows: out.map((r) => pick(r, back.cols)) } : {}) };
+      },
+
+      async sees(name, row, where) {
+        const rules = rulesOf(name);
+        const t = await table(name);
+        if (row === null || typeof row !== "object") return null;
+        // The row's values as parameters, with the column's affinity, so that a rule compares them
+        // as it compares the stored column in list() (a bare parameter has none: 7 = '7' is false).
+        const fromRow = (c: string): Sql => {
+          const v = t.columns.includes(c) && Object.hasOwn(row, c) ? bind(row[c]) : null;
+          const a = t.affinity.get(c);
+          if (typeof v === "number" && (a === "integer" || a === "real" || a === "numeric")) return { sql: "CAST(? AS NUMERIC)", params: [v] };
+          if (typeof v === "string" && a === "text") return { sql: "CAST(? AS TEXT)", params: [v] };
+          return { sql: "?", params: [v] };
+        };
+        const cond = and(whereSql(name, t, rules, where, fromRow), await ruleSql(name, rules, "list", fromRow));
+        const ok = await exec(`SELECT 1 AS ok WHERE ${cond.sql}`, cond.params);
+        return ok.length ? pick(row, visible(t, rules)) : null;
       },
     };
   }

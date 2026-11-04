@@ -453,3 +453,21 @@ describe("defaults", () => {
     expect(db.prepare("select count(*) n from t").all()).toEqual([{ n: 0 }]);
   });
 });
+
+describe("sees", () => {
+  it("answers as list() does, whatever the types on the two sides", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("create table d (id text primary key, owner integer, level integer, tag text)");
+    db.exec("insert into d values ('mine', 7, 1, '5'), ('top-secret', 3, 9, '9')");
+    const exec: Exec = async (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    for (const rule of ["owner = auth.uid", "owner != auth.uid", "level <= auth.clearance", "tag = auth.n", "tag in [5, '5']"]) {
+      const data = createData({ exec, access: { tables: { d: { list: rule } } } });
+      const who = data.as({ id: "u", uid: "7", clearance: "2", n: 5 });
+      const listed = ids(await who.list("d"));
+      const rows = db.prepare("select * from d").all() as Record<string, unknown>[];
+      const seen = [];
+      for (const r of rows) if (await who.sees("d", r)) seen.push(r.id);
+      expect(seen.sort(), rule).toEqual(listed);
+    }
+  });
+});

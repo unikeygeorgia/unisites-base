@@ -1,4 +1,4 @@
-import type { Auth, Data, Row, createData } from "./data.ts";
+import type { Auth, Data, Described, Filter, Row, createData } from "./data.ts";
 /**
  * `/rest/v1/<table>` as PostgREST answers it, so that supabase-js's `from()` works unchanged on a
  * project's own D1 or Durable Object (unisites ADR 0030, step 2). Every request goes through
@@ -62,7 +62,11 @@ type Item = {
     items: Item[];
 };
 export declare function parseSelect(s: string, depth?: number): Item[];
+/** `[not.]op.value` for one column. */
+export declare function parseCondition(desc: Described, column: string, expr: string): Filter;
 export declare function createRest(config: RestConfig): {
     handler: (request: Request) => Promise<Response>;
 };
+/** A value as Postgres would answer it: BOOLEAN as true or false, JSON parsed. */
+export declare function valueOf(desc: Described): (column: string, v: unknown) => unknown;
 export {};
