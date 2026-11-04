@@ -19,6 +19,9 @@ export type CopyOptions = {
     /** Downloads and uploads at once. */
     parallel?: number;
     fetch?: typeof fetch;
+    /** How many times a rate-limited (429) or failed (5xx) download is asked again, and the first wait. */
+    retries?: number;
+    retryMs?: number;
     onProgress?: (done: number, all: number) => void;
 };
 export type Copied = {

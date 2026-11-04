@@ -48,22 +48,25 @@ async function setup() {
     secret: "a-test-secret-that-is-long-enough-123",
   });
   const asked: string[] = [];
+  let limited = 2;
   const fetcher = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(String(input));
     if (url.origin === TARGET) return storage.handler(new Request(url, init));
     asked.push(url.pathname);
+    // Supabase's rate limit, twice on the first file.
+    if (url.pathname.endsWith("/a/1.png") && limited-- > 0) return new Response("slow down", { status: 429 });
     // A private bucket's file needs Supabase's service key.
     if (url.pathname.includes("/authenticated/") && new Headers(init?.headers).get("authorization") !== `Bearer ${SUPABASE_KEY}`) return new Response("no", { status: 400 });
     const b = source.get(url.pathname);
     return b ? new Response(b as BodyInit, { headers: { "content-type": "application/octet-stream" } }) : new Response("not found", { status: 404 });
   }) as typeof fetch;
   const run = () =>
-    copyFiles({ query: async (sql) => (await pg.query(sql)).rows as Record<string, unknown>[], source: SOURCE, sourceKey: SUPABASE_KEY, target: TARGET, targetKey: SERVICE, fetch: fetcher });
+    copyFiles({ query: async (sql) => (await pg.query(sql)).rows as Record<string, unknown>[], source: SOURCE, sourceKey: SUPABASE_KEY, target: TARGET, targetKey: SERVICE, fetch: fetcher, retryMs: 1 });
   return { db, bytes, asked, run };
 }
 
 describe("copying the files", () => {
-  it("copies each file to where its row says, says which it could not, and goes on where it stopped", async () => {
+  it("copies each file to where its row says, waits out a rate limit, says which it could not, and goes on where it stopped", async () => {
     const { db, bytes, asked, run } = await setup();
     const first = await run();
     expect(first).toMatchObject({ copied: 2, skipped: 0, bytes: 1204 });

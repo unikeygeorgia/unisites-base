@@ -28,7 +28,14 @@ export async function copyFiles(o) {
                     const from = f.isPublic || !o.sourceKey
                         ? `${o.source}/storage/v1/object/public/${f.bucket}/${path(f.name)}`
                         : `${o.source}/storage/v1/object/authenticated/${f.bucket}/${path(f.name)}`;
-                    const res = await get(from, f.isPublic || !o.sourceKey ? {} : { headers: { authorization: `Bearer ${o.sourceKey}`, apikey: o.sourceKey } });
+                    const init = f.isPublic || !o.sourceKey ? {} : { headers: { authorization: `Bearer ${o.sourceKey}`, apikey: o.sourceKey } };
+                    // Supabase limits how fast its files are read: a 429 or a 5xx is asked again, after a wait.
+                    let res = await get(from, init);
+                    for (let attempt = 1; (res.status === 429 || res.status >= 500) && attempt <= (o.retries ?? 5); attempt++) {
+                        const after = Number(res.headers.get("retry-after"));
+                        await new Promise((r) => setTimeout(r, after > 0 ? Math.min(after, 60) * 1000 : (o.retryMs ?? 1000) * 2 ** (attempt - 1)));
+                        res = await get(from, init);
+                    }
                     if (!res.ok)
                         throw new Error(`Supabase answered ${res.status}`);
                     const bytes = new Uint8Array(await res.arrayBuffer());
