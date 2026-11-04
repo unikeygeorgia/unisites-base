@@ -13,12 +13,18 @@
 //   (SUPABASE_ACCESS_TOKEN); --catalog takes the answer of `import-supabase --sql`, run in
 //   Supabase's SQL editor.
 //
+// npx unisites-base import-supabase --data --project <ref> [--out <dir>]
+//   reads every row and every person (with their bcrypt passwords) through the Management API
+//   and writes them as SQL files into <dir>/data (git-ignored) for a database made from base's
+//   migrations and schema.sql. It tries them on an empty SQLite and compares the counts with
+//   Postgres before it says they are ready. The files are personal data: one database, then delete.
+//
 // npx unisites-base check [project]
 //   checks the project's access rules (access.json, or worker.config.json's
 //   "access") against its migrations, and lists every place in its code that
 //   reads the database without them (data.admin(), env.DB). Exits 1 on an
 //   error; warnings and those places are for a person to read.
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 const [command, arg] = process.argv.slice(2);
@@ -44,8 +50,9 @@ async function importSupabase(args) {
     console.log(CATALOG_SQL.trim());
     return;
   }
+  if (args.includes("--data")) return importData(args, flag);
   if (!args.includes("--report")) {
-    console.error("only --report so far: it reads, writes a report and drafts, and changes nothing");
+    console.error("--report (a report and drafts) or --data (the rows, as SQL files); both only read Supabase");
     process.exit(2);
   }
   const { buildReport } = await import("../dist/import/report.js");
@@ -54,6 +61,10 @@ async function importSupabase(args) {
 
   let catalog;
   const ref = flag("project");
+  if (flag("catalog") && args.includes("--data")) {
+    console.error("--data reads the rows, so it needs --project");
+    process.exit(2);
+  }
   if (flag("catalog")) {
     const raw = JSON.parse(readFileSync(flag("catalog"), "utf8"));
     // The SQL editor's answer is a row with one column; the catalog itself is that column.
@@ -188,3 +199,72 @@ async function check(root) {
     for (const r of raw) console.log(`  ${r}`);
   }
 }
+
+/** One SELECT through Supabase's Management API, as rows. */
+function managementQuery(ref) {
+  const token = process.env.SUPABASE_ACCESS_TOKEN;
+  if (!token) {
+    console.error("SUPABASE_ACCESS_TOKEN: a personal access token (supabase.com/dashboard/account/tokens)");
+    process.exit(2);
+  }
+  if (!/^[a-z0-9]{20}$/.test(ref ?? "")) {
+    console.error(`--project ${ref ?? ""}: a project's ref is its 20 letters, as in <ref>.supabase.co`);
+    process.exit(2);
+  }
+  return async (query) => {
+    const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ query }),
+    });
+    if (!res.ok) throw new Error(`Supabase answered ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    return res.json();
+  };
+}
+
+async function importData(args, flag) {
+  const { CATALOG_SQL } = await import("../dist/import/catalog.js");
+  const { buildReport } = await import("../dist/import/report.js");
+  const { exportData, countRows } = await import("../dist/import/data.js");
+  const { DatabaseSync } = await import("node:sqlite");
+  const query = managementQuery(flag("project"));
+  const catalog = (await query(CATALOG_SQL))[0].catalog;
+  const out = flag("out") ?? "supabase-import";
+  const schemaFile = join(out, "schema.sql");
+  // The schema the rows go into: the one read and changed by a person, or a new draft.
+  const schema = existsSync(schemaFile) ? readFileSync(schemaFile, "utf8") : buildReport(catalog).schema;
+  const exported = await exportData(catalog, query);
+
+  // A run's files only: an earlier run's would be sent with them.
+  const dir = join(out, "data");
+  mkdirSync(dir, { recursive: true });
+  chmodSync(dir, 0o700);
+  for (const old of readdirSync(dir).filter((f) => f.endsWith(".sql"))) unlinkSync(join(dir, old));
+  writeFileSync(join(dir, ".gitignore"), "*\n");
+  for (const f of exported.files) {
+    writeFileSync(join(dir, f.name), f.sql, { mode: 0o600 });
+    chmodSync(join(dir, f.name), 0o600);
+  }
+
+  // Tried before anyone sends them: base's migrations, the schema, every file, then the counts.
+  const db = new DatabaseSync(":memory:");
+  const base = new URL("../migrations/", import.meta.url).pathname;
+  for (const file of readdirSync(base).filter((f) => f.endsWith(".sql")).sort()) db.exec(readFileSync(join(base, file), "utf8"));
+  db.exec(schema);
+  // Each file as one transaction, as D1 runs one, so defer_foreign_keys holds to its end.
+  for (const f of exported.files) db.exec(`BEGIN;\n${f.sql}\nCOMMIT;`);
+  const theirs = await countRows(catalog, query);
+  const wrong = Object.entries(theirs).filter(([t, n]) => db.prepare(`select count(*) as n from "${t.replaceAll('"', '""')}"`).get().n !== n);
+  for (const n of exported.notes) console.log(`note     ${n}`);
+  if (wrong.length) {
+    for (const [t, n] of wrong) console.error(`error    ${t}: ${n} rows in Postgres, ${db.prepare(`select count(*) as n from "${t}"`).get().n} after the import (rows changed meanwhile?)`);
+    process.exitCode = 1;
+  }
+  const rows = exported.files.reduce((n, f) => n + f.rows, 0);
+  console.log(`${exported.files.length} files, ${rows} rows and people, in ${dir} (tried on SQLite: ${wrong.length ? "counts differ" : "every count matches"})`);
+  console.log("\nFor a new D1 (base's migrations first):");
+  console.log(`  npx wrangler d1 execute <db> --remote --file ${schemaFile}`);
+  console.log(`  for f in ${dir}/*.sql; do npx wrangler d1 execute <db> --remote --file "$f"; done`);
+  console.log("Stop Unichat's writes while it runs, or the counts differ. Then delete the files: they hold people's data and password hashes.");
+}
+

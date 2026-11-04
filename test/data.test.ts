@@ -490,3 +490,53 @@ describe("up and now()", () => {
     expect(await code(outside.as({ id: "ana" }).list("items"))).toBe("bad_rule");
   });
 });
+
+describe("contains", () => {
+  function json() {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`create table j (id integer primary key, doc text);
+      insert into j values (1, '{"a": true, "n": 1, "tags": ["x", "y"], "o": {"k": "v"}}'), (2, '{"a": 1, "n": "1"}'), (3, '[1, 2, "3"]'), (4, 'not json'), (5, null);`);
+    const exec: Exec = async (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    return createData({ exec, access: { tables: { j: { list: "" } } } }).as(null);
+  }
+  const where = (value: unknown, op: "cs" | "cd" | "ov" = "cs", text = false) => [{ column: "doc", op, value, text }] as never;
+
+  it("compares by JSON type, nested, and skips what is not JSON", async () => {
+    const d = json();
+    expect(ids(await d.list("j", { where: where({ a: true }) }))).toEqual([1]);
+    expect(ids(await d.list("j", { where: where({ n: 1 }) }))).toEqual([1]);
+    expect(ids(await d.list("j", { where: where({ n: "1" }) }))).toEqual([2]);
+    expect(ids(await d.list("j", { where: where({ tags: ["y"], o: { k: "v" } }) }))).toEqual([1]);
+    expect(ids(await d.list("j", { where: where([2, "3"]) }))).toEqual([3]);
+    expect(ids(await d.list("j", { where: where(["2"], "cs", true) }))).toEqual([3]);
+    expect(ids(await d.list("j", { where: where(["2"]) }))).toEqual([]);
+    expect(ids(await d.list("j", { where: where([1, 2, "3", 4], "cd") }))).toEqual([3]);
+    expect(ids(await d.list("j", { where: where([9, "3"], "ov") }))).toEqual([3]);
+    expect(ids(await d.list("j", { where: [{ not: { column: "doc", op: "cs", value: { a: true } } }] as never }))).toEqual([2, 3]);
+  });
+
+  it("refuses keys that are not plain, and too many values", async () => {
+    const d = json();
+    expect(await code(d.list("j", { where: where({ 'a"] OR 1=1 --': 1 }) }))).toBe("bad_value");
+    expect(await code(d.list("j", { where: where(Array.from({ length: 21 }, (_, i) => i)) }))).toBe("too_many");
+  });
+});
+
+describe("contains, as jsonb", () => {
+  it("never meets across kinds: an array an array, an object an object", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(`create table k (id integer primary key, doc text);
+      insert into k values (1, '{"a": 1}'), (2, '[1]'), (3, '5'), (4, '"foo"'), (5, '[true]'), (6, '{"გასაღები": "x"}');`);
+    const exec: Exec = async (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    const d = createData({ exec, access: { tables: { k: { list: "" } } } }).as(null);
+    const cs = (value: unknown, text = false) => d.list("k", { where: [{ column: "doc", op: "cs", value, text }] as never }).then(ids);
+    expect(await cs([1])).toEqual([2]);
+    expect(await cs([])).toEqual([2, 5]);
+    expect(await cs({})).toEqual([1, 6]);
+    expect(await cs(["foo"], true)).toEqual([]);
+    expect(await cs(["true"], true)).toEqual([5]);
+    expect(await cs({ გასაღები: "x" })).toEqual([6]);
+    expect(await code(cs(Array.from({ length: 13 }, () => [])))).toBe("too_many");
+  });
+});
+

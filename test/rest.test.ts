@@ -152,6 +152,26 @@ describe("reading", () => {
   });
 });
 
+describe("contains", () => {
+  it("finds JSON arrays and objects that hold the value, as Postgres' @> does", async () => {
+    const { ana, nobody } = project();
+    expect(ids((await ana.from("notes").select("id").contains("meta", { tags: ["a"] })).data)).toEqual(["n1"]);
+    expect(ids((await ana.from("notes").select("id").contains("meta", { tags: ["b"] })).data)).toEqual([]);
+    expect((await nobody.from("plans").select("name").contains("features", ["chat"])).data).toEqual([{ name: "Start" }]);
+    expect((await nobody.from("plans").select("name").overlaps("features", ["x", "chat"])).data).toEqual([{ name: "Start" }]);
+    expect((await nobody.from("plans").select("name").containedBy("features", ["chat", "voice"])).data).toEqual([{ name: "Start" }]);
+    expect((await nobody.from("plans").select("name").containedBy("features", ["voice"])).data).toEqual([]);
+    expect((await nobody.from("plans").select("name").contains("features", ['chat"]'])).data).toEqual([]);
+    expect((await ana.from("notes").select("id").contains("body", "{a}")).data).toEqual([]);
+  });
+
+  it("refuses contains on a column that keeps numbers, and a range", async () => {
+    const { nobody } = project();
+    expect((await nobody.from("plans").select("id").contains("id", [1])).error?.code).toBe("22P02");
+    expect((await nobody.from("plans").select("id").contains("features", "[1,5)")).error?.code).toBe("PGRST100");
+  });
+});
+
 describe("embeds", () => {
   it("embeds the row a foreign key points to, as Unichat's tenants(...) does", async () => {
     const { ana, gio } = project();
@@ -350,7 +370,6 @@ describe("the edges", () => {
 
   it("says what it does not support instead of guessing", async () => {
     const { ana } = project();
-    expect((await ana.from("notes").select("id").contains("meta", { tags: ["a"] })).error?.code).toBe("PGRST100");
     expect((await ana.from("notes").select("id::text")).error?.code).toBe("PGRST100");
     expect((await ana.from("tenants").select("id, notes(id)").eq("notes.body", "milk")).error?.code).toBe("PGRST100");
   });

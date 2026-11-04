@@ -169,14 +169,16 @@ const { data } = await supabase.from("memberships").select("role, tenants(id, na
 - **Reads:** `select` with columns, `*`, `alias:column` and embeds through a foreign key of one
   column either way (`tenants(...)`, `notes(...)`, `table!fk_column(...)`, nested); each embedded
   table is read through its own rules. Filters `eq neq gt gte lt lte like ilike in is`, `not`,
-  `or()`, `and()`; `order`, `limit`, `range`, `count`, `head`, `single()`, `maybeSingle()`.
+  `or()`, `and()`, and on JSON columns `contains`, `containedBy`, `overlaps` (as jsonb's `@>`:
+  by JSON type, nested; a column that is not JSON is NULL); `order`, `limit`, `range`, `count`,
+  `head`, `single()`, `maybeSingle()`.
 - **Writes:** `insert`, `upsert` (`onConflict`, `ignoreDuplicates`), `update`, `delete`, with
   `.select()` for the rows back; `rpc(name, args)` calls the project's own function from `rpc`.
 - **Not Postgres:** a column declared `BOOLEAN` comes back `true`/`false`, one whose type names JSON
   (`JSON TEXT`, so that SQLite keeps it as text) comes back parsed. A filter's value is read by the
   column's type: text where it keeps numbers is a 400, as Postgres' `22P02`.
 - **Not supported, and a 400 rather than a guess:** `!inner`, filters or order on an embedded table,
-  casts, JSON paths, aggregates, `contains` and full-text search, CSV, other schemas than `public`.
+  casts, JSON paths, aggregates, ranges, full-text search, CSV, other schemas than `public`.
 - **Errors** have PostgREST's codes: no table or no rules `404 PGRST205`, a hidden column as a missing
   one `42703`, a refused row `403 42501`, a collision `409 23505`, a change without a filter `21000`.
 - **Origin:** writes and functions come from the project's own origin only (and those in `origins`,
@@ -255,6 +257,20 @@ files. Never a row of the data, and it changes nothing in Supabase or in the pro
 - `access.json`: the policies as rules. Helper functions such as `my_tenant_ids()` are inlined into
   `exists()`, `auth.uid()` is `auth.id`, roles become `auth.id != null`, and column grants become
   `hidden` and `readonly`. What it cannot translate stays closed and is listed with its SQL.
+
+Then the rows, and the people with their passwords:
+
+```bash
+SUPABASE_ACCESS_TOKEN=… npx unisites-base import-supabase --data --project <ref>
+```
+
+It writes `supabase-import/data/*.sql` (git-ignored, readable only by you) for a new database made
+from base's migrations and `schema.sql`, in the order the foreign keys need, each statement under
+D1's 100 KB. Postgres reads every value as text, so nothing is lost on the way: bigint and numeric
+keep their digits, timestamps are ISO in UTC as `now()` writes them, booleans 1 and 0, jsonb and
+arrays JSON. People go into `_base_user` with their own ids (old rows' `auth.uid()` is still
+`auth.id`), and bcrypt passwords into `_base_account`: they sign in with the password they had. The
+files are tried on SQLite and every count compared with Postgres before it says they are ready.
 
 Both drafts are tried before the report is written: the schema on SQLite after base's migrations,
 and `check` on the rules. The tests hold the translation against Postgres itself (PGlite): each

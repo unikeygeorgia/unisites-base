@@ -126,7 +126,46 @@ export function parseSelect(s: string, depth = 0): Item[] {
 
 // --- filters ---------------------------------------------------------------------------------
 
-const OPS = new Set(["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "in", "is"]);
+const OPS = new Set(["eq", "neq", "gt", "gte", "lt", "lte", "like", "ilike", "in", "is", "cs", "cd", "ov"]);
+
+/**
+ * contains()'s value as supabase-js sends it: JSON for an object or a JSON array, a Postgres array
+ * literal ({a,"b c",NULL}) for a JavaScript array, whose elements are text.
+ */
+function containsValue(raw: string): { value: unknown; text: boolean } {
+  if (raw.startsWith("[") || (raw.startsWith("{") && /^\{\s*("|\})/.test(raw))) {
+    try {
+      return { value: JSON.parse(raw), text: false };
+    } catch {
+      // A literal that only looks like JSON, below.
+    }
+  }
+  if (!raw.startsWith("{") || !raw.endsWith("}")) throw unsupported(`contains of ${JSON.stringify(raw.slice(0, 40))} (ranges are not)`);
+  const inner = raw.slice(1, -1);
+  if (inner === "") return { value: [], text: true };
+  const items: (string | null)[] = [];
+  let i = 0;
+  while (i <= inner.length) {
+    if (inner[i] === '"') {
+      let s = "";
+      i++;
+      while (i < inner.length && inner[i] !== '"') {
+        if (inner[i] === "\\") i++;
+        s += inner[i++] ?? "";
+      }
+      if (inner[i] !== '"') throw new RestError(400, "PGRST100", "an unclosed quote in an array");
+      items.push(s);
+      i += 2;
+    } else {
+      const end = inner.indexOf(",", i);
+      const word = inner.slice(i, end < 0 ? inner.length : end).trim();
+      if (word.includes("{")) throw unsupported("nested arrays in a Postgres literal");
+      items.push(word.toUpperCase() === "NULL" ? null : word);
+      i = end < 0 ? inner.length + 1 : end + 1;
+    }
+  }
+  return { value: items, text: true };
+}
 
 function unquote(v: string): string {
   if (v.length >= 2 && v.startsWith('"') && v.endsWith('"')) return v.slice(1, -1).replace(/\\(.)/g, "$1");
@@ -170,6 +209,11 @@ export function parseCondition(desc: Described, column: string, expr: string): F
     const v = { null: null, unknown: null, true: true, false: false }[raw.toLowerCase()];
     if (v === undefined) throw new RestError(400, "PGRST100", `is takes null, true or false: ${raw}`);
     filter = { column, op: "is", value: v };
+  } else if (op === "cs" || op === "cd" || op === "ov") {
+    const { value, text } = containsValue(raw);
+    // supabase-js sends containedBy(c, []) and overlaps(c, []) as {}: Postgres' empty array.
+    const empty = op !== "cs" && value !== null && typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length;
+    filter = { column, op, value: empty ? [] : value, text };
   } else if (op === "like" || op === "ilike") {
     filter = { column, op, value: unquote(raw) };
   } else {

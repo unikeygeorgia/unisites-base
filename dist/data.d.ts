@@ -32,11 +32,18 @@ export declare const sqlStorage: (storage: SqlStorage) => Exec;
 export type Auth = Record<string, unknown> & {
     id: unknown;
 };
-export type Op = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is" | "like" | "ilike";
+export type Op = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "in" | "is" | "like" | "ilike" | "cs" | "cd" | "ov";
+/**
+ * cs: the JSON column contains the value (Postgres' @>: every element of an array, every key of
+ * an object, nested); cd: an array column has only the value's elements; ov: they share one.
+ * `text`: the value's elements are text from a Postgres array literal ({1,2}), so they also
+ * meet numbers.
+ */
 export type Filter = {
     column: string;
     op: Op;
     value: unknown;
+    text?: boolean;
 } | {
     or: Filter[];
 } | {

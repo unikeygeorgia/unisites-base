@@ -16,6 +16,94 @@ function affinityOf(type) {
     return "numeric";
 }
 const MAX_IN = 1000;
+/** Values and nested arrays or objects in one contains-filter: each costs parameters (D1 takes 100). */
+const MAX_CONTAINS = 12;
+/** A key of a JSON object, written into a path in quotes: anything but a quote, a backslash or a control character. */
+const JSON_KEY = /^[^"\\\u0000-\u001f]{1,64}$/;
+/** A JSON column's containment as SQL, over `base` (the column, or a value inside it). */
+function containment(op, base, value, text) {
+    let leaves = 0;
+    let alias = 0;
+    const join = (pieces) => ({
+        sql: pieces.map((p) => (typeof p === "string" ? p : p.sql)).join(""),
+        params: pieces.flatMap((p) => (typeof p === "string" ? [] : p.params)),
+    });
+    const param = (v) => ({ sql: "?", params: [v] });
+    // One JSON value of the column, by its type and value, against one of ours: as jsonb compares them.
+    const count = () => {
+        if (++leaves > MAX_CONTAINS)
+            throw new AccessError("too_many", `at most ${MAX_CONTAINS} values in one contains`);
+    };
+    const scalar = (type, val, v) => {
+        count();
+        if (v === null)
+            return join([type, " = 'null'"]);
+        // A Postgres array literal's true and false are text: they also meet JSON's.
+        if (text && typeof v === "string" && /^(t|true|f|false)$/i.test(v)) {
+            return join(["(", type, ` = '${/^t/i.test(v) ? "true" : "false"}' OR (`, type, " = 'text' AND ", val, " = ", param(v), "))"]);
+        }
+        if (typeof v === "boolean")
+            return join([type, ` = '${v}'`]);
+        if (typeof v === "number") {
+            if (!Number.isFinite(v))
+                throw new AccessError("bad_value", "a number that is not finite");
+            return join(["(", type, " IN ('integer', 'real') AND ", val, " = ", param(v), ")"]);
+        }
+        if (typeof v === "string") {
+            const exact = join(["(", type, " = 'text' AND ", val, " = ", param(v), ")"]);
+            return text ? join(["(", exact, " OR (", type, " IN ('integer', 'real') AND CAST(", val, " AS TEXT) = ", param(v), "))"]) : exact;
+        }
+        throw new AccessError("bad_value", "contains takes values, arrays and objects");
+    };
+    const all = (items) => (items.length ? join(["(", ...items.flatMap((x, i) => (i ? [" AND ", x] : [x])), ")"]) : { sql: "1", params: [] });
+    const kind = (e) => (Array.isArray(e) ? "array" : "object");
+    // A nested value is read only when it is of the kind asked for: json_each() of a string is an error.
+    const ofKind = (type, e, inner) => join(["(CASE WHEN ", type, ` = '${kind(e)}' THEN `, inner(), " ELSE 0 END)"]);
+    // base at path holds v.
+    const holds = (b, path, v, depth) => {
+        if (depth > 4)
+            throw new AccessError("bad_value", "contains nests too deep");
+        count();
+        if (Array.isArray(v)) {
+            return all(v.map((e) => {
+                const j = `"$j${++alias}"`;
+                const type = { sql: `${j}.type`, params: [] };
+                const val = { sql: `${j}.value`, params: [] };
+                const inner = e !== null && typeof e === "object" ? ofKind(type, e, () => holds(val, "$", e, depth + 1)) : scalar(type, val, e);
+                return join(["EXISTS (SELECT 1 FROM json_each(", b, ", ", param(path), `) AS ${j} WHERE `, inner, ")"]);
+            }));
+        }
+        if (v !== null && typeof v === "object") {
+            return all(Object.entries(v).map(([k, e]) => {
+                if (!JSON_KEY.test(k))
+                    throw new AccessError("bad_value", "contains takes keys of 1 to 64 characters, without quotes or backslashes");
+                const p = `${path}."${k}"`;
+                const type = join(["json_type(", b, ", ", param(p), ")"]);
+                if (e !== null && typeof e === "object")
+                    return ofKind(type, e, () => holds(b, p, e, depth + 1));
+                return scalar(type, join(["json_extract(", b, ", ", param(p), ")"]), e);
+            }));
+        }
+        throw new AccessError("bad_value", "contains takes an array or an object");
+    };
+    // CASE, not AND: SQLite may read either side of an AND first, and json_each() of text that is
+    // not JSON is an error.
+    // In JSON a missing key is false (json_type() of it is NULL); a column that is not JSON is NULL.
+    const guarded = (x) => join(["(CASE WHEN json_valid(", base, ") THEN coalesce(", x, ", 0) ELSE NULL END)"]);
+    // As jsonb: an array contains an array, an object an object, never across.
+    if (op === "cs")
+        return guarded(ofKind(join(["json_type(", base, ")"]), value, () => holds(base, "$", value, 0)));
+    if (!Array.isArray(value))
+        throw new AccessError("bad_value", `${op} takes an array`);
+    const j = `"$j${++alias}"`;
+    const type = { sql: `${j}.type`, params: [] };
+    const val = { sql: `${j}.value`, params: [] };
+    const any = value.length ? join(["(", ...value.flatMap((e, i) => (i ? [" OR ", scalar(type, val, e)] : [scalar(type, val, e)])), ")"]) : { sql: "0", params: [] };
+    const each = join(["(SELECT 1 FROM json_each(", base, `) AS ${j} WHERE `]);
+    if (op === "ov")
+        return guarded(join(["EXISTS ", each, any, ")"]));
+    return guarded(join(["(CASE WHEN json_type(", base, ") = 'array' THEN NOT EXISTS ", each, "NOT ", any, ") ELSE NULL END)"]));
+}
 /** Column filters in one request: each is a parameter, and D1 takes 100 in a statement. */
 const MAX_FILTERS = 30;
 const among = (names, c) => !!names?.some((n) => n.toLowerCase() === c.toLowerCase());
@@ -103,6 +191,8 @@ export function createData(config) {
             // MORE_THAN_ONE below.
             if (/integer overflow/i.test(message))
                 throw new AccessError("too_many", "more than one row");
+            if (/too many SQL variables/i.test(message))
+                throw new AccessError("too_many", "too many values in one request");
             if (/does not match any PRIMARY KEY or UNIQUE/i.test(message))
                 throw new AccessError("bad_value", "on conflict names no key or UNIQUE index");
             throw e;
@@ -214,7 +304,8 @@ export function createData(config) {
             }
             if ("not" in f) {
                 const x = filterSql(name, t, rules, f.not, depth + 1, ref);
-                return { sql: `(NOT coalesce(${x.sql}, 0))`, params: x.params };
+                // NOT of NULL is NULL, so a row whose column is NULL is not found, as in Postgres.
+                return { sql: `(NOT ${x.sql})`, params: x.params };
             }
             columnsFor(name, t, rules, [f.column], "read");
             const c = ref(f.column);
@@ -264,6 +355,16 @@ export function createData(config) {
                     }
                     const like = [...f.value].map((ch) => (ch === "*" ? "%" : ch === "\\" ? "\\\\" : ch)).join("");
                     return at(`(${col} LIKE ? ESCAPE '\\')`, [like]);
+                }
+                case "cs":
+                case "cd":
+                case "ov": {
+                    // A JSON column: text, or a column without a type.
+                    const a = t.affinity.get(f.column);
+                    if (a !== "text" && a !== "blob")
+                        throw new AccessError("bad_value", `${f.column}: contains is for JSON columns`);
+                    const x = containment(f.op, c, f.value, f.text === true);
+                    return { sql: x.sql, params: x.params };
                 }
                 default:
                     throw new AccessError("bad_value", `unknown filter ${String(f.op)}`);

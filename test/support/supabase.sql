@@ -7,9 +7,10 @@ create schema storage;
 create schema extensions;
 create table auth.users (
   id uuid primary key, email text, phone text, encrypted_password text,
-  email_confirmed_at timestamptz, phone_confirmed_at timestamptz, banned_until timestamptz
+  email_confirmed_at timestamptz, phone_confirmed_at timestamptz, banned_until timestamptz,
+  raw_user_meta_data jsonb default '{}', created_at timestamptz default now(), updated_at timestamptz default now()
 );
-create table auth.identities (id uuid primary key, user_id uuid references auth.users(id), provider text);
+create table auth.identities (id uuid primary key, user_id uuid references auth.users(id), provider text, provider_id text);
 create table auth.mfa_factors (id uuid primary key, user_id uuid references auth.users(id), factor_type text);
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
 create function auth.role() returns text language sql stable as $$ select current_setting('request.jwt.claim.role', true) $$;
@@ -18,14 +19,14 @@ create table storage.objects (id uuid primary key, bucket_id text references sto
 alter table storage.objects enable row level security;
 create publication supabase_realtime;
 
-insert into auth.users values
-  ('00000000-0000-0000-0000-000000000001', 'ana@test', null, '$2a$10$abcdefghijklmnopqrstuv', now(), null, null),
-  ('00000000-0000-0000-0000-000000000002', null, '995555000000', '', null, now(), null),
-  ('00000000-0000-0000-0000-000000000003', 'gio@test', null, '$2a$10$abcdefghijklmnopqrstuv', null, null, now() + interval '1 day');
+insert into auth.users (id, email, phone, encrypted_password, email_confirmed_at, phone_confirmed_at, banned_until, raw_user_meta_data) values
+  ('00000000-0000-0000-0000-000000000001', 'Ana@Example.com', null, '$2a$10$abcdefghijklmnopqrstuv', now(), null, null, '{"full_name": "Ana Beridze"}'),
+  ('00000000-0000-0000-0000-000000000002', null, '995555000000', '', null, now(), null, '{}'),
+  ('00000000-0000-0000-0000-000000000003', 'gio@example.com', null, '$2a$10$abcdefghijklmnopqrstuv', null, null, now() + interval '1 day', '{"avatar_url": "https://x.test/g.png"}');
 insert into auth.identities values
-  ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'email'),
-  ('10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002', 'phone'),
-  ('10000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000003', 'google');
+  ('10000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'email', 'ana@test'),
+  ('10000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000002', 'phone', '995555000000'),
+  ('10000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000003', 'google', '1170000000000000000001');
 insert into auth.mfa_factors values ('20000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000001', 'totp');
 insert into storage.buckets values ('avatars', 'avatars', true, 5242880, array['image/png', 'image/jpeg']), ('media', 'media', false, null, null);
 insert into storage.objects values ('30000000-0000-0000-0000-000000000001', 'avatars', 'a/1.png', '{"size": 1200}');

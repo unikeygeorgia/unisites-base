@@ -7,7 +7,11 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createData, type Exec } from "../src/data.ts";
 import { CATALOG_SQL, type Catalog } from "../src/import/catalog.ts";
 import { parseExpr } from "../src/import/pg.ts";
+import bcrypt from "bcryptjs";
+
+import { countRows, exportData } from "../src/import/data.ts";
 import { buildReport, type Report } from "../src/import/report.ts";
+import { project as baseProject } from "./support/project.ts";
 import { defaultOf, policyRule } from "../src/import/translate.ts";
 import { verifyDrafts } from "../src/import/verify.ts";
 
@@ -431,3 +435,87 @@ describe("never more than Postgres", () => {
     within(await p.reads("n"));
   });
 });
+
+describe("moving the rows and the people", () => {
+  it("moves every row exactly, and the people sign in with their old passwords", async () => {
+    const pg = new PGlite();
+    await pg.exec(readFileSync(new URL("./support/supabase.sql", import.meta.url), "utf8"));
+    await pg.exec(`
+      update auth.users set encrypted_password = '${bcrypt.hashSync("Old-password-1", 4)}' where email = 'Ana@Example.com';
+      create table public.odd (id bigint primary key, price numeric(14, 2), score double precision, flag boolean, at timestamptz, day date,
+        doc jsonb, tags text[], raw bytea, note text);
+      insert into public.odd values
+        (9007199254740993, 12345678901.25, 0.1, true, '2026-11-04 10:20:30.456+04', '2026-11-04', '{"a": [1, {"b": null}]}', '{a,"b c"}', '\\x00ff', 'it''s; -- not SQL'),
+        (2, null, 'NaN', false, null, null, null, '{}', null, null);
+      insert into public.tenants (id, name) values ('${T1}', 'Shop one');
+      insert into public.memberships values ('${T1}', '${U(1)}', 'owner');
+      insert into public.messages (tenant_id, body, direction) select '${T1}', 'm' || g, 'inbound' from generate_series(1, 23) g;
+    `);
+    const catalog = ((await pg.query(CATALOG_SQL)).rows[0] as { catalog: Catalog }).catalog;
+    const report = buildReport(catalog);
+    const query = async (sql: string) => (await pg.query(sql)).rows as Record<string, unknown>[];
+    const out = await exportData(catalog, query, { pageRows: 5, fileRows: 10 });
+
+    const p = baseProject();
+    p.db.exec(report.schema);
+    for (const f of out.files) p.db.exec(`BEGIN;\n${f.sql}\nCOMMIT;`);
+    // Every table has as many rows as in Postgres.
+    const theirs = await countRows(catalog, query);
+    for (const [table, n] of Object.entries(theirs)) expect((p.db.prepare(`select count(*) as n from "${table}"`).get() as { n: number }).n, table).toBe(n);
+    expect(out.files.filter((f) => f.name.includes("messages")).length).toBe(3);
+
+    const odd = p.db.prepare("select cast(id as text) as id, price, score, flag, at, day, doc, tags, case when raw is null then null else hex(raw) end as raw, note from odd order by id").all();
+    expect(odd).toEqual([
+      { id: "2", price: null, score: null, flag: 0, at: null, day: null, doc: null, tags: "[]", raw: null, note: null },
+      { id: "9007199254740993", price: 12345678901.25, score: 0.1, flag: 1, at: "2026-11-04T06:20:30.456000Z", day: "2026-11-04", doc: '{"a": [1, {"b": null}]}', tags: '["a","b c"]', raw: "00FF", note: "it's; -- not SQL" },
+    ]);
+    expect(out.notes.join(" ")).toMatch(/odd\.score: NaN/);
+
+    const users = p.db.prepare("select id, name, email, emailVerified, image, banned, phoneNumber from _base_user order by id").all();
+    expect(users).toEqual([
+      { id: U(1), name: "Ana Beridze", email: "ana@example.com", emailVerified: 1, image: null, banned: 0, phoneNumber: null },
+      { id: U(2), name: "+995555000000", email: "995555000000@phone.invalid", emailVerified: 0, image: null, banned: 0, phoneNumber: "+995555000000" },
+      { id: U(3), name: "gio", email: "gio@example.com", emailVerified: 0, image: "https://x.test/g.png", banned: 1, phoneNumber: null },
+    ]);
+    expect(p.db.prepare("select providerId, accountId from _base_account where userId = ? order by providerId").all(U(3))).toEqual([
+      { providerId: "credential", accountId: U(3) },
+      { providerId: "google", accountId: "1170000000000000000001" },
+    ]);
+    const signIn = await p.call("/sign-in/email", { email: "ana@example.com", password: "Old-password-1" });
+    expect(signIn.response.status, JSON.stringify(signIn.body)).toBe(200);
+    expect(signIn.body?.user?.id).toBe(U(1));
+  });
+});
+
+describe("moving what is hard to move", () => {
+  it("keeps a table that points to itself in order, leaves out whom it must, and keeps statements under 100,000 bytes", async () => {
+    const pg = new PGlite();
+    await pg.exec(readFileSync(new URL("./support/supabase.sql", import.meta.url), "utf8").split("-- A Unichat-shaped project")[0]!);
+    await pg.exec(`
+      insert into auth.users (id, email) values ('${U(4)}', null), ('${U(5)}', 'GIO@example.com');
+      create table public.tree (id int primary key, parent int references public.tree(id));
+      insert into public.tree values (1, 2), (2, 3), (3, null), (4, 1);
+      create table public.owned (id int primary key, by uuid references auth.users(id), must uuid not null references auth.users(id));
+      insert into public.owned values (1, '${U(4)}', '${U(1)}'), (2, '${U(1)}', '${U(4)}');
+      create table public.loose (doc json, at timestamptz);
+      insert into public.loose values ('{"a": 1}', 'infinity'), ('[1]', '-infinity'), (null, null);
+      create table public.words (id int primary key, body text);
+      insert into public.words select g, repeat('ქართული ', 4000) from generate_series(1, 4) g;
+    `);
+    const catalog = ((await pg.query(CATALOG_SQL)).rows[0] as { catalog: Catalog }).catalog;
+    const report = buildReport(catalog);
+    const out = await exportData(catalog, async (sql) => (await pg.query(sql)).rows as Record<string, unknown>[], { fileRows: 1 });
+    const p = baseProject();
+    p.db.exec(report.schema);
+    // Without a transaction (defer_foreign_keys off), so the order alone has to hold.
+    for (const f of out.files) p.db.exec(f.sql);
+    expect(p.db.prepare("select count(*) as n from tree").get()).toEqual({ n: 4 });
+    expect(p.db.prepare("select id, by, must from owned order by id").all()).toEqual([{ id: 1, by: null, must: U(1) }]);
+    expect(p.db.prepare("select at from loose order by rowid").all()).toEqual([{ at: "infinity" }, { at: "-infinity" }, { at: null }]);
+    expect(p.db.prepare("select count(*) as n from words").get()).toEqual({ n: 4 });
+    for (const f of out.files) for (const st of f.sql.split(/;\n/)) expect(new TextEncoder().encode(st).length, f.name).toBeLessThan(100_000);
+    expect(out.notes.join(" ")).toMatch(/left out/);
+    expect(p.db.prepare("select email from _base_user order by email").all()).toEqual([{ email: "995555000000@phone.invalid" }, { email: "ana@example.com" }, { email: "gio@example.com" }]);
+  });
+});
+
