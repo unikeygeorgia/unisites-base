@@ -93,9 +93,18 @@ export function createData(config) {
             return await raw(sql, params);
         }
         catch (e) {
-            if (/constraint failed|constraint violation|SQLITE_CONSTRAINT/i.test(String(e?.message))) {
+            const message = String(e?.message);
+            if (/constraint failed|constraint violation|SQLITE_CONSTRAINT/i.test(message)) {
                 throw new AccessError("conflict", "the row conflicts with another one, or with the table's own checks");
             }
+            // REFUSED below: a rule that failed inside the statement stops all of it.
+            if (/malformed JSON/i.test(message))
+                throw new AccessError("refused", "a row the rules do not allow");
+            // MORE_THAN_ONE below.
+            if (/integer overflow/i.test(message))
+                throw new AccessError("too_many", "more than one row");
+            if (/does not match any PRIMARY KEY or UNIQUE/i.test(message))
+                throw new AccessError("bad_value", "on conflict names no key or UNIQUE index");
             throw e;
         }
     };
@@ -110,7 +119,17 @@ export function createData(config) {
             if (!info.length)
                 throw new AccessError("unknown_table", name);
             const key = info.filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
-            t = { columns: info.map((c) => c.name), key: key.length ? key : ["rowid"], affinity: new Map(info.map((c) => [c.name, affinityOf(c.type ?? "")])) };
+            const fks = (await exec(`PRAGMA foreign_key_list(${quote(name)})`, []));
+            // Only keys of one column: an embed joins on one.
+            const single = fks.filter((f) => fks.filter((g) => g.id === f.id).length === 1);
+            t = {
+                columns: info.map((c) => c.name),
+                key: key.length ? key : ["rowid"],
+                affinity: new Map(info.map((c) => [c.name, affinityOf(c.type ?? "")])),
+                types: new Map(info.map((c) => [c.name, c.type ?? ""])),
+                defaults: new Map(info.map((c) => [c.name, c.dflt_value ?? null])),
+                foreignKeys: single.map((f) => ({ from: f.from, table: f.table, to: f.to ?? null })),
+            };
             tables.set(name, t);
         }
         return t;
@@ -268,6 +287,98 @@ export function createData(config) {
                 throw new AccessError("bad_value", "limit");
             return Math.min(n, maxRows);
         }
+        // A failed check inside the statement: json() of text that is not JSON stops the statement,
+        // and SQLite undoes all of it (exec turns the error into "refused"). The text depends on the
+        // row, so SQLite never works it out once ahead of the rows.
+        const REFUSED = (row) => `json('refused:' || typeof(${row}))`;
+        // A change of more than one row stops the statement before it changes any: the count is
+        // worked out once, at the first row, and abs() of the smallest integer is an error.
+        function moreThanOne(name, t, cond) {
+            const row = `${quote(name)}.${quote(t.columns[0])}`;
+            return {
+                sql: `(CASE WHEN (SELECT count(*) FROM ${quote(name)} WHERE ${cond.sql}) > 1 THEN abs(CASE WHEN typeof(${row}) IS NULL THEN 0 ELSE -9223372036854775807 - 1 END) ELSE 1 END)`,
+                params: cond.params,
+            };
+        }
+        async function insert(name, input, options, conflict) {
+            const rules = rulesOf(name);
+            const t = await table(name);
+            const rows = Array.isArray(input) ? input : [input];
+            if (!rows.length)
+                return { count: 0, ...(options.returning ? { rows: [] } : {}) };
+            if (rows.length > maxRows)
+                throw new AccessError("too_many", `at most ${maxRows} rows`);
+            for (const r of rows)
+                if (r === null || typeof r !== "object" || Array.isArray(r))
+                    throw new AccessError("bad_value", "a row is an object");
+            const given = [...new Set(rows.flatMap((r) => Object.keys(r)))];
+            columnsFor(name, t, rules, given, "create");
+            const fill = admin ? {} : (rules.fill ?? {});
+            for (const c of Object.keys(fill))
+                if (!t.columns.includes(c))
+                    throw new AccessError("unknown_column", `${name}.${c}`);
+            if (!given.length && !Object.keys(fill).length)
+                throw new AccessError("bad_value", "a row needs a column");
+            // Every column with a default goes in too, worked out once ("$v" is MATERIALIZED), so the
+            // rules see the value the table keeps and not a NULL it never stores.
+            const named = [...given, ...Object.keys(fill)];
+            const cols = [...named, ...t.columns.filter((c) => t.defaults.get(c) != null && !named.includes(c))];
+            // The rows go in as one JSON parameter (D1 takes at most 100), an object per row. A column
+            // one row leaves out takes the column's default in it, and the rules see that default.
+            const payload = json(rows.map((r) => {
+                const o = {};
+                for (const c of given)
+                    if (Object.hasOwn(r, c) && r[c] !== undefined)
+                        o[c] = stored(t, c, r[c]);
+                for (const [c, from] of Object.entries(fill))
+                    o[c] = stored(t, c, auth?.[from.slice(5)]);
+                return o;
+            }));
+            const picked = (c) => `CASE WHEN json_type(value, '$.${c}') IS NULL THEN ${t.defaults.get(c) ?? "NULL"} ELSE json_extract(value, '$.${c}') END AS ${quote(`c_${c}`)}`;
+            const vName = (c) => `"$v".${quote(`c_${c}`)}`;
+            const fromNew = (c) => (cols.includes(c) ? { sql: vName(c), params: [] } : { sql: "NULL", params: [] });
+            const checks = [await ruleSql(name, rules, "create", fromNew)];
+            if (options.returning)
+                checks.push(await ruleSql(name, rules, "list", fromNew));
+            const allowed = and(...checks);
+            let onConflict = "";
+            let changed = [];
+            if (conflict) {
+                const target = conflict.onConflict?.length ? conflict.onConflict : t.key;
+                if (target.includes("rowid"))
+                    throw new AccessError("bad_value", `${name} has no key; name the columns it may collide on`);
+                columnsFor(name, t, rules, target, "read");
+                if (conflict.ignoreDuplicates)
+                    onConflict = ` ON CONFLICT (${target.map(quote).join(", ")}) DO NOTHING`;
+                else {
+                    // A colliding row is changed as update() would: never its key, nor what fill set.
+                    const set = given.filter((c) => !target.includes(c) && !t.key.includes(c));
+                    const sets = set.length ? set : [target[0]];
+                    const excluded = (c) => (set.includes(c) ? { sql: `excluded.${quote(c)}`, params: [] } : fromTable(name)(c));
+                    const parts = [
+                        await ruleSql(name, rules, "list", fromTable(name)),
+                        await ruleSql(name, rules, "update", fromTable(name)),
+                        await ruleSql(name, rules, "updateCheck", excluded),
+                    ];
+                    if (options.returning)
+                        parts.push(await ruleSql(name, rules, "list", excluded));
+                    const cond = and(...parts);
+                    onConflict =
+                        ` ON CONFLICT (${target.map(quote).join(", ")}) DO UPDATE SET ${sets.map((c) => `${quote(c)} = excluded.${quote(c)}`).join(", ")}` +
+                            ` WHERE CASE WHEN ${cond.sql} THEN 1 ELSE ${REFUSED(`excluded.${quote(target[0])}`)} END`;
+                    changed = cond.params;
+                }
+            }
+            const back = options.returning ? visible(t, rules) : [];
+            const out = await exec(`WITH "$v" AS MATERIALIZED (SELECT ${cols.map(picked).join(", ")} FROM json_each(?)) ` +
+                `INSERT OR ABORT INTO ${quote(name)} (${cols.map(quote).join(", ")}) ` +
+                `SELECT ${cols.map(vName).join(", ")} FROM "$v" ` +
+                `WHERE CASE WHEN NOT EXISTS (SELECT 1 FROM "$v" WHERE NOT (${allowed.sql})) THEN 1 ELSE ${REFUSED(vName(cols[0]))} END` +
+                `${onConflict} RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`, [payload, ...allowed.params, ...changed]);
+            if (!conflict?.ignoreDuplicates && out.length !== rows.length)
+                throw new AccessError("refused", `create on ${name}`);
+            return { count: out.length, ...(options.returning ? { rows: out } : {}) };
+        }
         return {
             async list(name, query = {}) {
                 const rules = rulesOf(name);
@@ -296,45 +407,33 @@ export function createData(config) {
                 const rows = await exec(`SELECT ${selectList(name, pick)} FROM ${quote(name)} WHERE ${where.sql} LIMIT 1`, where.params);
                 return rows[0] ?? null;
             },
-            async create(name, input, options = {}) {
+            create: (name, input, options = {}) => insert(name, input, options),
+            upsert: (name, input, options = {}) => insert(name, input, options, options),
+            async count(name, where) {
                 const rules = rulesOf(name);
                 const t = await table(name);
-                const rows = Array.isArray(input) ? input : [input];
-                if (!rows.length)
-                    return { count: 0, ...(options.returning ? { rows: [] } : {}) };
-                if (rows.length > maxRows)
-                    throw new AccessError("too_many", `at most ${maxRows} rows`);
-                for (const r of rows)
-                    if (r === null || typeof r !== "object" || Array.isArray(r))
-                        throw new AccessError("bad_value", "a row is an object");
-                // Every row has the same columns, as PostgREST does: a key one row lacks is null in it.
-                const given = [...new Set(rows.flatMap((r) => Object.keys(r)))];
-                columnsFor(name, t, rules, given, "create");
-                const fill = admin ? {} : (rules.fill ?? {});
-                for (const c of Object.keys(fill))
-                    if (!t.columns.includes(c))
-                        throw new AccessError("unknown_column", `${name}.${c}`);
-                const cols = [...given, ...Object.keys(fill)];
-                if (!cols.length)
-                    throw new AccessError("bad_value", "a row needs a column");
-                const value = (r, c) => (Object.hasOwn(fill, c) ? stored(t, c, auth?.[fill[c].slice(5)]) : stored(t, c, r[c]));
-                // The rows go in as one JSON parameter (D1 takes at most 100), one array per row.
-                const payload = json(rows.map((r) => cols.map((c) => value(r, c))));
-                const vName = (c) => `"$v".${quote(`c_${c}`)}`;
-                const fromNew = (c) => (cols.includes(c) ? { sql: vName(c), params: [] } : { sql: "NULL", params: [] });
-                const checks = [await ruleSql(name, rules, "create", fromNew)];
-                if (options.returning)
-                    checks.push(await ruleSql(name, rules, "list", fromNew));
-                const refused = and(...checks);
-                const back = options.returning ? visible(t, rules) : [];
-                const out = await exec(`WITH "$v" AS (SELECT ${cols.map((c, i) => `json_extract(value, '$[${i}]') AS ${quote(`c_${c}`)}`).join(", ")} FROM json_each(?)) ` +
-                    `INSERT OR ABORT INTO ${quote(name)} (${cols.map(quote).join(", ")}) ` +
-                    `SELECT ${cols.map(vName).join(", ")} FROM "$v" ` +
-                    `WHERE NOT EXISTS (SELECT 1 FROM "$v" WHERE NOT (${refused.sql})) ` +
-                    `RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`, [payload, ...refused.params]);
-                if (out.length !== rows.length)
-                    throw new AccessError("refused", `create on ${name}`);
-                return { count: out.length, ...(options.returning ? { rows: out } : {}) };
+                const cond = and(whereSql(name, t, rules, where), await ruleSql(name, rules, "list", fromTable(name)));
+                const rows = await exec(`SELECT count(*) AS n FROM ${quote(name)} WHERE ${cond.sql}`, cond.params);
+                return Number(rows[0]?.n ?? 0);
+            },
+            async describe(name) {
+                const rules = rulesOf(name);
+                const t = await table(name);
+                const shown = visible(t, rules);
+                const keyOf = async (other) => (await table(other)).key;
+                const foreignKeys = [];
+                for (const f of t.foreignKeys) {
+                    if (!shown.includes(f.from))
+                        continue;
+                    const to = f.to ?? (await keyOf(f.table))[0];
+                    if (to && isName(f.table))
+                        foreignKeys.push({ from: f.from, table: f.table, to });
+                }
+                return {
+                    columns: shown.map((c) => ({ name: c, type: t.types.get(c) ?? "", affinity: t.affinity.get(c) ?? "blob" })),
+                    key: t.key,
+                    foreignKeys,
+                };
             },
             async update(name, where, patch, options = {}) {
                 const rules = rulesOf(name);
@@ -357,6 +456,8 @@ export function createData(config) {
                 ];
                 if (options.returning)
                     parts.push(await ruleSql(name, rules, "list", fromNew));
+                if (options.one)
+                    parts.push(moreThanOne(name, t, and(...parts)));
                 const cond = and(...parts);
                 const back = options.returning ? visible(t, rules) : [];
                 const out = await exec(`UPDATE OR ABORT ${quote(name)} SET ${cols.map((c) => `${quote(c)} = ?`).join(", ")} WHERE ${cond.sql} ` +
@@ -368,7 +469,14 @@ export function createData(config) {
                 const t = await table(name);
                 if (!admin && !narrows(where))
                     throw new AccessError("filter_required", `delete on ${name}`);
-                const cond = and(whereSql(name, t, rules, where), await ruleSql(name, rules, "list", fromTable(name)), await ruleSql(name, rules, "delete", fromTable(name)));
+                const parts = [
+                    whereSql(name, t, rules, where),
+                    await ruleSql(name, rules, "list", fromTable(name)),
+                    await ruleSql(name, rules, "delete", fromTable(name)),
+                ];
+                if (options.one)
+                    parts.push(moreThanOne(name, t, and(...parts)));
+                const cond = and(...parts);
                 const back = options.returning ? visible(t, rules) : [];
                 const out = await exec(`DELETE FROM ${quote(name)} WHERE ${cond.sql} RETURNING ${back.length ? back.map(quote).join(", ") : "1 AS _"}`, cond.params);
                 return { count: out.length, ...(options.returning ? { rows: out } : {}) };
@@ -380,6 +488,8 @@ export function createData(config) {
         as: (auth) => open(auth, false),
         /** Everything, without rules: the project's own server code only. */
         admin: () => open(null, true),
+        /** Most rows one list returns. */
+        maxRows,
     };
 }
 export { AccessError, checkAccess, parseRule } from "./access.js";

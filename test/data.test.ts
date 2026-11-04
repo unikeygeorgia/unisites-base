@@ -442,3 +442,14 @@ describe("checking a project's rules", () => {
     expect(checkAccess(ACCESS, schema)).toEqual([]);
   });
 });
+
+describe("defaults", () => {
+  it("lets create's rule see the default the table keeps, not NULL", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec("create table t (id text primary key, approved_by text default 'system')");
+    const exec: Exec = async (sql, params) => db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    const data = createData({ exec, access: { tables: { t: { list: "", create: "approved_by = null" } } } });
+    expect(await code(data.as({ id: "u" }).create("t", { id: "a" }))).toBe("refused");
+    expect(db.prepare("select count(*) n from t").all()).toEqual([{ n: 0 }]);
+  });
+});

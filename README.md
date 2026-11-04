@@ -137,6 +137,57 @@ await db.update("notes", [{ column: "id", op: "eq", value: "n1" }], { body: "…
 data.admin();   // no rules, like Supabase's service role: the project's own server code only
 ```
 
+`db.upsert(table, rows, { onConflict: ["tenant_id", "external_id"] })` is create, and a row that
+collides changes the one already there through update's rules (and list on it), as Postgres does for
+`ON CONFLICT DO UPDATE`; one refused row writes none. A key a row leaves out takes the column's
+default, and the rules see that default.
+
+### supabase-js: `/rest/v1`
+
+`unisites-base/rest` answers `/rest/v1/<table>` as PostgREST does, through `data.as(person)`, so a
+project moving from Supabase keeps its `supabase.from(...)` code:
+
+```ts
+import { createRest } from "unisites-base/rest";
+
+const rest = createRest({
+  data,
+  auth: async (request) => {
+    const session = await base.api.getSession({ headers: request.headers });
+    return session ? { id: session.user.id, role: session.user.role } : null;
+  },
+  rpc: { mark_read: async ({ conversation_id }, { db }) => db.update("messages", [/* … */], { read: true }) },
+});
+if (url.pathname.startsWith("/rest/v1/")) return rest.handler(request);
+```
+
+```ts
+const supabase = createClient(location.origin, "unisites");   // the key is not used: the cookie is
+const { data } = await supabase.from("memberships").select("role, tenants(id, name)").eq("user_id", id);
+```
+
+- **Reads:** `select` with columns, `*`, `alias:column` and embeds through a foreign key of one
+  column either way (`tenants(...)`, `notes(...)`, `table!fk_column(...)`, nested); each embedded
+  table is read through its own rules. Filters `eq neq gt gte lt lte like ilike in is`, `not`,
+  `or()`, `and()`; `order`, `limit`, `range`, `count`, `head`, `single()`, `maybeSingle()`.
+- **Writes:** `insert`, `upsert` (`onConflict`, `ignoreDuplicates`), `update`, `delete`, with
+  `.select()` for the rows back; `rpc(name, args)` calls the project's own function from `rpc`.
+- **Not Postgres:** a column declared `BOOLEAN` comes back `true`/`false`, one whose type names JSON
+  (`JSON TEXT`, so that SQLite keeps it as text) comes back parsed. A filter's value is read by the
+  column's type: text where it keeps numbers is a 400, as Postgres' `22P02`.
+- **Not supported, and a 400 rather than a guess:** `!inner`, filters or order on an embedded table,
+  casts, JSON paths, aggregates, `contains` and full-text search, CSV, other schemas than `public`.
+- **Errors** have PostgREST's codes: no table or no rules `404 PGRST205`, a hidden column as a missing
+  one `42703`, a refused row `403 42501`, a collision `409 23505`, a change without a filter `21000`.
+- **Origin:** writes and functions come from the project's own origin only (and those in `origins`,
+  an app's WebView): every `*.unisites.ge` is the same site, so the cookie's SameSite=Lax is not
+  enough. A function answers GET only with `{ handler, get: true }`, for one that changes nothing.
+  Bodies are `application/json`, at most 2 MB.
+- **single() on a change** changes no row if it would change more than one, as PostgREST rolls back.
+- **Embeds:** at most 20 in one select, and at most 5 × `maxRows` embedded rows in one request.
+- **What a person can learn, as in Postgres:** a UNIQUE collision (409), `ignoreDuplicates` with a
+  count, or an upsert refused on a row they cannot see, says that such a row exists.
+
 `npx unisites-base check` checks `access.json` against `migrations/` (no such table or column, base's
 own tables opened, writes anyone may make, columns that look secret left readable, a rule that
 trusts what a person writes about themself) and lists every `data.admin()` and `env.DB` in the code.
