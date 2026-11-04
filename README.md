@@ -49,7 +49,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
 ## Use
 
 ```bash
-npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.7.0.tar.gz   # the lockfile keeps its hash
+npm install https://github.com/unikeygeorgia/unisites-base/archive/refs/tags/v0.8.0.tar.gz   # the lockfile keeps its hash
 npx unisites-base migrations          # copies base_*.sql into ./migrations
 ```
 
