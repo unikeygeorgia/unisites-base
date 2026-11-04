@@ -1,5 +1,5 @@
 import { betterAuth } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from "better-auth/plugins";
 import { messagesFrom, render } from "./messages.js";
@@ -59,7 +59,7 @@ export function deviceOf(agent) {
     const system = /iPhone|iPad/.test(agent) ? "iOS" : /Android/.test(agent) ? "Android" : /Mac OS X/.test(agent) ? "macOS" : /Windows/.test(agent) ? "Windows" : /Linux/.test(agent) ? "Linux" : "";
     return [browser, system].filter(Boolean).join(", ").slice(0, 60);
 }
-function unisitesBase(notify) {
+function unisitesBase(notify, users) {
     return {
         hooks: {
             after: [
@@ -100,6 +100,22 @@ function unisitesBase(notify) {
         init: () => ({
             options: {
                 databaseHooks: {
+                    user: {
+                        create: {
+                            before: async (user) => {
+                                try {
+                                    await users?.before?.(user);
+                                }
+                                catch (e) {
+                                    // The project's refusal, said to the person.
+                                    throw new APIError("BAD_REQUEST", { message: e instanceof Error ? e.message : String(e) });
+                                }
+                            },
+                            after: async (user) => {
+                                await users?.after?.(user);
+                            },
+                        },
+                    },
                     session: {
                         create: {
                             after: async (session, ctx) => {
@@ -206,7 +222,7 @@ export function baseOptions(config) {
     const sms = on("phone") ? config.sms : undefined;
     const withPasswords = on("passwords");
     const plugins = [
-        unisitesBase(notify),
+        unisitesBase(notify, config.users),
         unisitesOrders({
             app: config.app,
             // Unisites waits for this letter, to say whether it went.

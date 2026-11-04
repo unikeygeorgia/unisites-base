@@ -19,6 +19,24 @@ import { type Notices, type Switches, type Templates } from "./settings.ts";
 export type BaseConfig = {
     /** The name people see in SMS and mail: "Multicolor". */
     app: string;
+    /**
+     * The project's own work around a new person, however they came (sign-up, Google, an invitation,
+     * auth.admin): `before` throws to refuse them (a blocked address), `after` adds what the project
+     * keeps (a profile row), as a Supabase trigger on auth.users did.
+     */
+    users?: {
+        before?: (user: {
+            email: string;
+            name: string;
+            image?: string | null;
+        }) => Promise<void>;
+        after?: (user: {
+            id: string;
+            email: string;
+            name: string;
+            image?: string | null;
+        }) => Promise<void>;
+    };
     /** How a new address is confirmed: a link (base's own pages), or a 6-digit code (Supabase's; needs emailCode on). */
     verifyEmailBy?: "link" | "code";
     /** Where the project answers, "https://myshop.ge"; sign-in lives at /api/auth. */

@@ -1,5 +1,5 @@
 import { betterAuth, type BetterAuthOptions, type BetterAuthPlugin } from "better-auth";
-import { createAuthMiddleware } from "better-auth/api";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 import { hashPassword } from "better-auth/crypto";
 import { admin, captcha, emailOTP, haveIBeenPwned, phoneNumber, twoFactor } from "better-auth/plugins";
 
@@ -43,6 +43,15 @@ import {
 export type BaseConfig = {
   /** The name people see in SMS and mail: "Multicolor". */
   app: string;
+  /**
+   * The project's own work around a new person, however they came (sign-up, Google, an invitation,
+   * auth.admin): `before` throws to refuse them (a blocked address), `after` adds what the project
+   * keeps (a profile row), as a Supabase trigger on auth.users did.
+   */
+  users?: {
+    before?: (user: { email: string; name: string; image?: string | null }) => Promise<void>;
+    after?: (user: { id: string; email: string; name: string; image?: string | null }) => Promise<void>;
+  };
   /** How a new address is confirmed: a link (base's own pages), or a 6-digit code (Supabase's; needs emailCode on). */
   verifyEmailBy?: "link" | "code";
   /** Where the project answers, "https://myshop.ge"; sign-in lives at /api/auth. */
@@ -154,7 +163,7 @@ export function deviceOf(agent: string | null | undefined): string {
   return [browser, system].filter(Boolean).join(", ").slice(0, 60);
 }
 
-function unisitesBase(notify: Notify): BetterAuthPlugin {
+function unisitesBase(notify: Notify, users?: BaseConfig["users"]): BetterAuthPlugin {
   return {
     hooks: {
       after: [
@@ -192,6 +201,21 @@ function unisitesBase(notify: Notify): BetterAuthPlugin {
     init: () => ({
       options: {
         databaseHooks: {
+          user: {
+            create: {
+              before: async (user) => {
+                try {
+                  await users?.before?.(user);
+                } catch (e) {
+                  // The project's refusal, said to the person.
+                  throw new APIError("BAD_REQUEST", { message: e instanceof Error ? e.message : String(e) });
+                }
+              },
+              after: async (user) => {
+                await users?.after?.(user);
+              },
+            },
+          },
           session: {
             create: {
               after: async (session, ctx) => {
@@ -301,7 +325,7 @@ export function baseOptions(config: BaseConfig) {
   const withPasswords = on("passwords");
 
   const plugins: BetterAuthPlugin[] = [
-    unisitesBase(notify),
+    unisitesBase(notify, config.users),
     unisitesOrders({
       app: config.app,
       // Unisites waits for this letter, to say whether it went.

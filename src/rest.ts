@@ -27,7 +27,8 @@ import type { Auth, Data, Described, Filter, Order, Row, createData } from "./da
  * out takes the column's default (PostgREST's missing=default) even without asking.
  */
 
-export type RpcFunction = (args: Row, context: { db: Data; auth: Auth | null; request: Request }) => Promise<unknown>;
+/** admin: the call came with the service key (the server's own code), not from a person. */
+export type RpcFunction = (args: Row, context: { db: Data; auth: Auth | null; admin: boolean; request: Request }) => Promise<unknown>;
 
 /**
  * A function answers POST; GET too only with `get: true`, for one that changes nothing (PostgREST's
@@ -52,7 +53,8 @@ export type RestConfig = {
   origins?: string[];
 };
 
-class RestError extends Error {
+/** An answer with PostgREST's status and code; a project's rpc function throws one as Postgres' raise exception. */
+export class RestError extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
@@ -418,7 +420,7 @@ export function createRest(config: RestConfig) {
     const auth = asAdmin ? null : await config.auth(request);
     const db = asAdmin ? config.data.admin() : config.data.as(auth);
 
-    if (path.startsWith("rpc/")) return rpc(request, url, path.slice(4), db, auth);
+    if (path.startsWith("rpc/")) return rpc(request, url, path.slice(4), db, auth, asAdmin);
 
     const table = path;
     if (!isName(table)) throw new AccessError("unknown_table", table);
@@ -522,7 +524,7 @@ export function createRest(config: RestConfig) {
     return json(status, rows[0], headers, head);
   }
 
-  async function rpc(request: Request, url: URL, name: string, db: Data, auth: Auth | null): Promise<Response> {
+  async function rpc(request: Request, url: URL, name: string, db: Data, auth: Auth | null, admin: boolean): Promise<Response> {
     const entry = isName(name) && config.rpc && Object.hasOwn(config.rpc, name) ? config.rpc[name] : undefined;
     if (!entry) throw new RestError(404, "PGRST202", `Could not find the function public.${name} in the schema cache`);
     const fn = typeof entry === "function" ? entry : entry.handler;
@@ -536,7 +538,7 @@ export function createRest(config: RestConfig) {
       if (b === null || typeof b !== "object" || Array.isArray(b)) throw new RestError(400, "PGRST102", "rpc takes an object");
       args = b as Row;
     } else throw new RestError(405, "PGRST117", `${request.method} is not supported`);
-    const result = await fn(args, { db, auth, request });
+    const result = await fn(args, { db, auth, admin, request });
     return json(200, result === undefined ? null : result, {}, request.method === "HEAD");
   }
 

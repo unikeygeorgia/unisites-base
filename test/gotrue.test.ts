@@ -242,3 +242,29 @@ describe("what the review found", () => {
   });
 });
 
+describe("with base's breached-password check on", () => {
+  it("creates and changes passwords through /auth/v1 too", async () => {
+    const real = globalThis.fetch;
+    // haveibeenpwned.com answers that no password is known.
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) =>
+      String(input instanceof Request ? input.url : input).startsWith("https://api.pwnedpasswords.com/") ? new Response("") : real(input, init)) as typeof fetch;
+    try {
+      const p = project({ verifyEmailBy: "code", trustedOrigins: [ORIGIN], checkLeakedPasswords: true }, { migrations: ["base_0001.sql", "base_0002.sql", "base_0003.sql", "base_0004.sql"] });
+      const exec: Exec = async (sql, params) => p.db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+      const gotrue = createGotrue({ base: p.base, exec, secret: "a-test-secret-that-is-long-enough-123", serviceKey: SERVICE_KEY });
+      const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init);
+        return new URL(request.url).pathname.startsWith("/auth/v1/") ? gotrue.handler(request) : p.base.handler(request);
+      };
+      const server = createClient(ORIGIN, SERVICE_KEY, { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: fetcher } });
+      const made = await server.auth.admin.createUser({ email: "gio@example.com", password: "Gio-password-1", email_confirm: true });
+      expect(made.error).toBeNull();
+      const sb = createClient(ORIGIN, "unisites", { auth: { persistSession: false, autoRefreshToken: false }, global: { fetch: fetcher } });
+      expect((await sb.auth.signInWithPassword({ email: "gio@example.com", password: "Gio-password-1" })).error).toBeNull();
+      expect((await sb.auth.updateUser({ password: "Gio-password-22" })).error).toBeNull();
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+});
+

@@ -24,9 +24,11 @@ import type { Auth, Data, Described, Filter, Row, createData } from "./data.ts";
  * true or false, and one whose type names JSON (`JSON TEXT`) comes back parsed; a key a row leaves
  * out takes the column's default (PostgREST's missing=default) even without asking.
  */
+/** admin: the call came with the service key (the server's own code), not from a person. */
 export type RpcFunction = (args: Row, context: {
     db: Data;
     auth: Auth | null;
+    admin: boolean;
     request: Request;
 }) => Promise<unknown>;
 /**
@@ -53,6 +55,13 @@ export type RestConfig = {
     /** Other origins that may write with the person's cookie (an app's own WebView); none by default. */
     origins?: string[];
 };
+/** An answer with PostgREST's status and code; a project's rpc function throws one as Postgres' raise exception. */
+export declare class RestError extends Error {
+    readonly status: number;
+    readonly code: string;
+    readonly details: string | null;
+    constructor(status: number, code: string, message: string, details?: string | null);
+}
 type Item = {
     k: "star";
 } | {

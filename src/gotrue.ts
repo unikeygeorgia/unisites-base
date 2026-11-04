@@ -1,4 +1,5 @@
 import type { createBase } from "./base.ts";
+import { passwords } from "./passwords.ts";
 import type { Auth, Exec } from "./data.ts";
 
 /**
@@ -198,7 +199,10 @@ export function createGotrue(config: GotrueConfig) {
   /** A path of base's own, as the browser would ask it: base's limits, captcha and log apply. */
   async function call(request: Request, path: string, body: Json, captcha?: string): Promise<{ status: number; json: Json; headers: Headers }> {
     const url = new URL(request.url);
-    const headers = new Headers({ "content-type": "application/json", origin: request.headers.get("origin") ?? url.origin });
+    // The browser's own Origin, for better-auth to check; a call without one (an app, a server) has none made up.
+    const headers = new Headers({ "content-type": "application/json" });
+    const origin = request.headers.get("origin");
+    if (origin) headers.set("origin", origin);
     for (const h of ["cf-connecting-ip", "user-agent", "accept-language", "cookie"]) {
       const v = request.headers.get(h);
       if (v) headers.set(h, v);
@@ -291,7 +295,8 @@ export function createGotrue(config: GotrueConfig) {
       throw new GotrueError(422, "weak_password", `Password should be at least ${minPasswordLength} characters`);
     }
     if (config.checkLeakedPasswords !== false && (await breached(password))) throw new GotrueError(422, "weak_password", "Password is known to be weak and easy to guess, please choose a different one");
-    const hash = await ctx.password.hash(password);
+    // base's own hash (scrypt), not ctx.password's: a plugin may wrap that one for its endpoints alone.
+    const hash = await passwords.hash(password);
     if (await ctx.internalAdapter.findCredentialAccount(userId)) await ctx.internalAdapter.updatePassword(userId, hash);
     else await ctx.internalAdapter.linkAccount({ userId, providerId: "credential", accountId: userId, password: hash });
     if (notice) {

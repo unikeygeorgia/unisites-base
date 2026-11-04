@@ -1,5 +1,6 @@
 import { AccessError, isName } from "./access.js";
-class RestError extends Error {
+/** An answer with PostgREST's status and code; a project's rpc function throws one as Postgres' raise exception. */
+export class RestError extends Error {
     status;
     code;
     details;
@@ -389,7 +390,7 @@ export function createRest(config) {
         const auth = asAdmin ? null : await config.auth(request);
         const db = asAdmin ? config.data.admin() : config.data.as(auth);
         if (path.startsWith("rpc/"))
-            return rpc(request, url, path.slice(4), db, auth);
+            return rpc(request, url, path.slice(4), db, auth, asAdmin);
         const table = path;
         if (!isName(table))
             throw new AccessError("unknown_table", table);
@@ -481,7 +482,7 @@ export function createRest(config) {
         }
         return json(status, rows[0], headers, head);
     }
-    async function rpc(request, url, name, db, auth) {
+    async function rpc(request, url, name, db, auth, admin) {
         const entry = isName(name) && config.rpc && Object.hasOwn(config.rpc, name) ? config.rpc[name] : undefined;
         if (!entry)
             throw new RestError(404, "PGRST202", `Could not find the function public.${name} in the schema cache`);
@@ -500,7 +501,7 @@ export function createRest(config) {
         }
         else
             throw new RestError(405, "PGRST117", `${request.method} is not supported`);
-        const result = await fn(args, { db, auth, request });
+        const result = await fn(args, { db, auth, admin, request });
         return json(200, result === undefined ? null : result, {}, request.method === "HEAD");
     }
     // The columns to read: the ones asked for, and those an embed joins on.
