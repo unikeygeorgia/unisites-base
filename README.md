@@ -83,6 +83,64 @@ export default {
 Secrets (`BASE_SECRET`, `BASE_PLATFORM_KEY` and the senders' keys) are set on the project's Worker from Unisites, never
 in the repository.
 
+## Data and access rules
+
+`unisites-base/data` reads and writes a project's tables for a person through rules, the way
+Postgres RLS and PocketBase's API rules do (unisites ADR 0030). The rules are in `access.json`:
+
+```json
+{
+  "tables": {
+    "notes": {
+      "list": "exists(memberships, tenant_id = row.tenant_id && user_id = auth.id)",
+      "view": "exists(memberships, tenant_id = row.tenant_id && user_id = auth.id)",
+      "create": "exists(memberships, tenant_id = row.tenant_id && user_id = auth.id)",
+      "update": "owner_id = auth.id",
+      "delete": "owner_id = auth.id",
+      "hidden": ["internal_note"],
+      "fill": { "owner_id": "auth.id" }
+    },
+    "plans": { "list": "" }
+  }
+}
+```
+
+- **Five rules a table:** `list`, `view` (one row by key), `create` (checked on the new rows),
+  `update` (the old row) with `updateCheck` (the new row; `update` when missing), `delete`. A missing
+  or `null` rule refuses everyone, `""` lets everyone in, and a table without rules is not served.
+- **The language:** columns, `auth.<field>`, `row.<column>` inside `exists()`, `=`, `!=`, `<`, `<=`,
+  `>`, `>=`, `in [..]`, `&&`, `||`, `!`, `null`, `true`, `false`, numbers and strings. It becomes SQL with
+  every value as a parameter; it is never SQL.
+- **Columns:** `hidden` are never read, filtered, ordered by or written; `readonly` are read only;
+  `fill` are set from the session on create and readonly after. Keys are never changed.
+- **One statement each,** with the rules inside, so nothing is read, counted or written that they do
+  not allow: update and delete also apply `list`, returned rows apply `list`, a create writes all its
+  rows or none. Update and delete need a column filter.
+- **Values as the column keeps them:** text only into text columns, numbers and booleans only into
+  numeric ones (SQLite would turn `'-5'` into `-5` after the rule had checked the text). `rowid` and
+  its other names are never taken from a request, and a table's `ON CONFLICT REPLACE` never deletes
+  another row (`INSERT OR ABORT`). A UNIQUE, foreign key or CHECK failure is only `conflict`: it does
+  not name the column, though it does say that the value is taken, as in Postgres.
+- **Signed out:** `auth.*` is null, and a comparison with null is false; a `!` or `!=` over `auth.*`
+  is true, so `check` warns about it.
+
+```ts
+import { createData, d1 } from "unisites-base/data";
+import access from "../access.json";
+
+const data = createData({ exec: d1(env.DB), access });   // sqlStorage(ctx.storage.sql) in a Durable Object
+const db = data.as(user ? { id: user.id, role: user.role } : null);
+await db.list("notes", { where: [{ column: "body", op: "ilike", value: "%milk%" }], order: [{ column: "id" }], limit: 50 });
+await db.create("notes", { id: crypto.randomUUID(), tenant_id: "t1", body: "…" });
+await db.update("notes", [{ column: "id", op: "eq", value: "n1" }], { body: "…" });
+
+data.admin();   // no rules, like Supabase's service role: the project's own server code only
+```
+
+`npx unisites-base check` checks `access.json` against `migrations/` (no such table or column, base's
+own tables opened, writes anyone may make, columns that look secret left readable, a rule that
+trusts what a person writes about themself) and lists every `data.admin()` and `env.DB` in the code.
+
 ## Develop
 
 ```bash

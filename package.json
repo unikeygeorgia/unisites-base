@@ -8,7 +8,8 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./smtp": { "types": "./dist/smtp.d.ts", "import": "./dist/smtp.js" },
     "./messages": { "types": "./dist/messages.d.ts", "import": "./dist/messages.js" },
-    "./platform": { "types": "./dist/platform.d.ts", "import": "./dist/platform.js" }
+    "./platform": { "types": "./dist/platform.d.ts", "import": "./dist/platform.js" },
+    "./data": { "types": "./dist/data.d.ts", "import": "./dist/data.js" }
   },
   "files": ["dist", "migrations", "bin"],
   "bin": { "unisites-base": "bin/unisites-base.mjs" },
