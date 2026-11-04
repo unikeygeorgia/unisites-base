@@ -27,6 +27,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4",
+    "@electric-sql/pglite": "0.5.10",
     "@supabase/supabase-js": "2.108.2",
     "@types/node": "^24",
     "typescript": "^5.9",

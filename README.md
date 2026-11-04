@@ -234,6 +234,32 @@ supabase
   session fields are the ones they joined with, until the socket's hour is up or `disconnect`.
 - **Not yet:** broadcast and presence.
 
+### Moving from Supabase: the report
+
+```bash
+SUPABASE_ACCESS_TOKEN=… npx unisites-base import-supabase --report --project <ref> --code .
+npx unisites-base import-supabase --sql        # the query, for Supabase's SQL editor; then --catalog answer.json
+```
+
+It reads the project's catalog with one SELECT: tables, column grants, constraints, indexes,
+triggers, policies, SQL functions, the realtime publication, buckets, and counts of people and
+files. Never a row of the data, and it changes nothing in Supabase or in the project. Into
+`./supabase-import/` it writes:
+
+- `report.md`: each table, rule, function, trigger, bucket, way of signing in and use of supabase-js
+  in the code, as moves by itself, moves with a difference, or by hand, and why.
+- `schema.sql`: the tables for SQLite. uuid and text become `TEXT`, jsonb and arrays `JSON TEXT`,
+  timestamps ISO `TEXT`, numeric `REAL` (said in the report), an identity key `INTEGER PRIMARY KEY`,
+  enums a `CHECK`. `gen_random_uuid()` and `now()` keep making the same values, foreign keys to
+  `auth.users` point to `_base_user`, an `updated_at` trigger becomes SQLite's.
+- `access.json`: the policies as rules. Helper functions such as `my_tenant_ids()` are inlined into
+  `exists()`, `auth.uid()` is `auth.id`, roles become `auth.id != null`, and column grants become
+  `hidden` and `readonly`. What it cannot translate stays closed and is listed with its SQL.
+
+Both drafts are tried before the report is written: the schema on SQLite after base's migrations,
+and `check` on the rules. The tests hold the translation against Postgres itself (PGlite): each
+person reads, and may create, the same rows under the draft as under the policies.
+
 `npx unisites-base check` checks `access.json` against `migrations/` (no such table or column, base's
 own tables opened, writes anyone may make, columns that look secret left readable, a rule that
 trusts what a person writes about themself) and lists every `data.admin()` and `env.DB` in the code.
