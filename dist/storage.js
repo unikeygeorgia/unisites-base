@@ -106,18 +106,17 @@ export function createStorage(config) {
         let type;
         let cache;
         if (/^multipart\/form-data/i.test(request.headers.get("content-type") ?? "")) {
-            const form = await request.formData();
-            let file;
-            form.forEach((v) => {
-                if (!file && typeof v !== "string")
-                    file = v;
-            });
+            // Read by hand: supabase-js sends the file as a part named "", which the Workers runtime's
+            // formData() refuses ("Content-Disposition header in FormData part is missing a name").
+            const form = multipart(new Uint8Array(await request.arrayBuffer()), request.headers.get("content-type") ?? "");
+            const file = form.find((p) => p.filename !== null || p.type !== null);
             if (!file)
                 throw new StorageError(400, "InvalidRequest", "no file");
-            bytes = new Uint8Array(await file.arrayBuffer());
+            bytes = file.body;
             type = file.type || "application/octet-stream";
-            const c = form.get("cacheControl");
-            cache = typeof c === "string" && /^\d{1,9}$/.test(c) ? `max-age=${c}` : "max-age=3600";
+            const c = form.find((p) => p.name === "cacheControl" && p.filename === null);
+            const seconds = c ? new TextDecoder().decode(c.body).trim() : "";
+            cache = /^\d{1,9}$/.test(seconds) ? `max-age=${seconds}` : "max-age=3600";
         }
         else {
             bytes = new Uint8Array(await request.arrayBuffer());
@@ -267,4 +266,52 @@ export function createStorage(config) {
             }
         },
     };
+}
+/** A multipart/form-data body's parts, whatever their names (an empty one included). */
+export function multipart(body, contentType) {
+    const m = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType);
+    if (!m)
+        throw new StorageError(400, "InvalidRequest", "no multipart boundary");
+    const enc = new TextEncoder();
+    const delim = enc.encode(`--${m[1] ?? m[2]}`);
+    const at = (from) => {
+        outer: for (let i = from; i <= body.length - delim.length; i++) {
+            for (let j = 0; j < delim.length; j++)
+                if (body[i + j] !== delim[j])
+                    continue outer;
+            return i;
+        }
+        return -1;
+    };
+    const parts = [];
+    let start = at(0);
+    while (start >= 0) {
+        let head = start + delim.length;
+        if (body[head] === 0x2d && body[head + 1] === 0x2d)
+            break; // "--": the closing delimiter
+        if (body[head] === 0x0d && body[head + 1] === 0x0a)
+            head += 2;
+        const next = at(head);
+        if (next < 0)
+            break;
+        // The part runs to the CRLF before the next delimiter; its headers end at the first blank line.
+        const end = next >= 2 && body[next - 2] === 0x0d && body[next - 1] === 0x0a ? next - 2 : next;
+        let split = -1;
+        for (let i = head; i + 3 < end; i++) {
+            if (body[i] === 0x0d && body[i + 1] === 0x0a && body[i + 2] === 0x0d && body[i + 3] === 0x0a) {
+                split = i;
+                break;
+            }
+        }
+        if (split >= 0) {
+            const headers = new TextDecoder().decode(body.subarray(head, split));
+            const disposition = /^content-disposition:(.*)$/im.exec(headers)?.[1] ?? "";
+            const name = /\bname="([^"]*)"/i.exec(disposition)?.[1] ?? null;
+            const filename = /\bfilename="([^"]*)"/i.exec(disposition)?.[1] ?? null;
+            const type = /^content-type:\s*([^;\r\n]+)/im.exec(headers)?.[1]?.trim() ?? null;
+            parts.push({ name, filename, type, body: body.slice(split + 4, end) });
+        }
+        start = next;
+    }
+    return parts;
 }

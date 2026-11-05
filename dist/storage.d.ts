@@ -58,3 +58,11 @@ export type StorageConfig = {
 export declare function createStorage(config: StorageConfig): {
     handler: (request: Request) => Promise<Response>;
 };
+export type FormPart = {
+    name: string | null;
+    filename: string | null;
+    type: string | null;
+    body: Uint8Array;
+};
+/** A multipart/form-data body's parts, whatever their names (an empty one included). */
+export declare function multipart(body: Uint8Array, contentType: string): FormPart[];

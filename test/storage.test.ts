@@ -129,3 +129,22 @@ describe("/storage/v1", () => {
     expect(bytes.get("media/c/avatar.jpg")?.body.byteLength).toBe(1);
   });
 });
+
+describe("multipart (supabase-js's upload body)", () => {
+  it("reads a file part with an empty name, binary bytes intact, and cacheControl", async () => {
+    const { multipart } = await import("../src/storage.ts");
+    const audio = new Uint8Array([0x1a, 0x45, 0x0d, 0x0a, 0x0d, 0x0a, 0x2d, 0x2d, 0xff, 0x00]);
+    const b = "----x";
+    const enc = new TextEncoder();
+    const body = new Uint8Array([
+      ...enc.encode(`--${b}\r\nContent-Disposition: form-data; name="cacheControl"\r\n\r\n31536000\r\n`),
+      ...enc.encode(`--${b}\r\nContent-Disposition: form-data; name=""; filename="a.webm"\r\nContent-Type: audio/webm\r\n\r\n`),
+      ...audio,
+      ...enc.encode(`\r\n--${b}--\r\n`),
+    ]);
+    const parts = multipart(body, `multipart/form-data; boundary=${b}`);
+    expect(parts.map((p) => [p.name, p.filename, p.type])).toEqual([["cacheControl", null, null], ["", "a.webm", "audio/webm"]]);
+    expect([...parts[1]!.body]).toEqual([...audio]);
+    expect(new TextDecoder().decode(parts[0]!.body)).toBe("31536000");
+  });
+});
