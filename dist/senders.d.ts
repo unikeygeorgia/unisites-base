@@ -41,8 +41,8 @@ export type EmailBinding = {
 /**
  * Cloudflare Email Service, from the Worker's send_email binding. The binding
  * only sends from the addresses it allows: Unisites gives every app
- * <name>@unisites.ge, so a letter goes out before the project has a sender of
- * its own. `from` may carry a name ("Shop <shop@unisites.ge>").
+ * <name>@unisite.ge, so a letter goes out before the project has a sender of
+ * its own. `from` may carry a name ("Shop <shop@unisite.ge>").
  */
 export declare function emailService({ binding, from, replyTo, }: {
     binding: EmailBinding;
@@ -54,7 +54,7 @@ export declare function emailService({ binding, from, replyTo, }: {
  * (ADR 0021, point 5), so the project's code does not change when the sender
  * does: SMTP when SMTP_HOST is set, else Resend when RESEND_API_KEY is, else
  * Cloudflare Email Service from the address Unisites gave the app
- * (UNISITES_MAIL_FROM, <name>@unisites.ge, with its EMAIL binding), else none.
+ * (UNISITES_MAIL_FROM, <name>@unisite.ge, with its EMAIL binding), else none.
  * The address mail comes from is MAIL_FROM (or EMAIL_FROM). On Unisites'
  * own address, MAIL_FROM still gives the letter its name, and its address
  * takes the replies.

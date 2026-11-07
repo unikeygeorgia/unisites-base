@@ -372,7 +372,7 @@ export function createRest(config) {
         }
         const method = request.method.toUpperCase();
         // Writes and functions with the person's cookie only from the project's own pages (and the
-        // app's): every *.unisites.ge is the same site as every other, so SameSite=Lax is not enough.
+        // app's): every *.unisite.ge is the same site as every other, so SameSite=Lax is not enough.
         if ((method !== "GET" && method !== "HEAD") || path.startsWith("rpc/")) {
             const origin = request.headers.get("origin");
             const site = request.headers.get("sec-fetch-site");
