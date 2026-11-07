@@ -1,6 +1,6 @@
 # unisites-base
 
-Sign-in and mail for a [Unisites](https://app.unisites.ge) project: [better-auth](https://www.better-auth.com)
+Sign-in and mail for a [Unisites](https://app.unisite.ge) project: [better-auth](https://www.better-auth.com)
 on the project's own Cloudflare Worker and D1, set up the way every Unisites project shares
 (unisites ADR 0021 and 0022).
 
@@ -30,7 +30,7 @@ on the project's own Cloudflare Worker and D1, set up the way every Unisites pro
   your own function. `mailFromEnv(env)` picks the one Unisites set up as Worker secrets
   (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `MAIL_FROM`; or `RESEND_API_KEY`), so
   the project's code does not change with the sender. Until the project has one, it sends through
-  Cloudflare Email Service from the address Unisites gives every app, `<name>@unisites.ge` (the
+  Cloudflare Email Service from the address Unisites gives every app, `<name>@unisite.ge` (the
   `EMAIL` binding and `UNISITES_MAIL_FROM`), so email and password work from the first deploy;
   `MAIL_FROM` then still gives the letter its name, and its address takes the replies. `unisites-base/smtp` is the SMTP client alone,
   without better-auth (Unisites tests a mailbox with it before saving it).
@@ -67,7 +67,7 @@ export default {
         secret: env.BASE_SECRET,
         locale: localeOf(request),
         sms: smsoffice({ apiKey: env.SMSOFFICE_API_KEY, sender: "MyShop" }),
-        mail: mailFromEnv(env),                       // SMTP, Resend, or <name>@unisites.ge
+        mail: mailFromEnv(env),                       // SMTP, Resend, or <name>@unisite.ge
         google: { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET },
         turnstileSecret: env.TURNSTILE_SECRET,
         platformKey: env.BASE_PLATFORM_KEY,          // invitations and reset letters from Unisites
@@ -182,7 +182,7 @@ const { data } = await supabase.from("memberships").select("role, tenants(id, na
 - **Errors** have PostgREST's codes: no table or no rules `404 PGRST205`, a hidden column as a missing
   one `42703`, a refused row `403 42501`, a collision `409 23505`, a change without a filter `21000`.
 - **Origin:** writes and functions come from the project's own origin only (and those in `origins`,
-  an app's WebView): every `*.unisites.ge` is the same site, so the cookie's SameSite=Lax is not
+  an app's WebView): every `*.unisite.ge` is the same site, so the cookie's SameSite=Lax is not
   enough. A function answers GET only with `{ handler, get: true }`, for one that changes nothing.
   Bodies are `application/json`, at most 2 MB.
 - **single() on a change** changes no row if it would change more than one, as PostgREST rolls back.

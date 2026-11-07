@@ -283,7 +283,7 @@ describe("the Worker's part", () => {
 
   it("lets in only the project's own origin, and those it names", async () => {
     const { realtime } = worker(["capacitor://localhost"]);
-    expect((await realtime.handler(upgrade({ origin: "https://evil.unisites.ge" }))).status).toBe(403);
+    expect((await realtime.handler(upgrade({ origin: "https://evil.unisite.ge" }))).status).toBe(403);
     expect((await realtime.handler(upgrade({ origin: "https://app.test" }))).status).toBe(204);
     expect((await realtime.handler(upgrade({ origin: "capacitor://localhost" }))).status).toBe(204);
     expect((await realtime.handler(new Request("https://app.test/realtime/v1/websocket"))).status).toBe(426);

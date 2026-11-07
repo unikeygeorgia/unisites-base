@@ -381,7 +381,7 @@ describe("the edges", () => {
     expect((await get("whoami")).status).toBe(405);
     expect((await get("plans")).status).toBe(200);
     expect((await get("plans", { "sec-fetch-site": "same-site" })).status).toBe(403);
-    expect((await client("ana", { origin: "https://evil.unisites.ge" }).rpc("whoami")).status).toBe(403);
+    expect((await client("ana", { origin: "https://evil.unisite.ge" }).rpc("whoami")).status).toBe(403);
   });
 
   it("keeps a request's embeds within a budget", async () => {

@@ -16,31 +16,31 @@ function binding() {
 describe("Email Service", () => {
   it("sends through the binding, with a name when the address has one", async () => {
     const b = binding();
-    await emailService({ binding: b, from: "shop@unisites.ge" })(LETTER);
-    await emailService({ binding: b, from: "Shop <shop@unisites.ge>", replyTo: "hi@shop.ge" })(LETTER);
+    await emailService({ binding: b, from: "shop@unisite.ge" })(LETTER);
+    await emailService({ binding: b, from: "Shop <shop@unisite.ge>", replyTo: "hi@shop.ge" })(LETTER);
     expect(b.sent).toEqual([
-      { ...LETTER, from: "shop@unisites.ge" },
-      { ...LETTER, from: { email: "shop@unisites.ge", name: "Shop" }, replyTo: "hi@shop.ge" },
+      { ...LETTER, from: "shop@unisite.ge" },
+      { ...LETTER, from: { email: "shop@unisite.ge", name: "Shop" }, replyTo: "hi@shop.ge" },
     ]);
   });
 
   it("is the sender when the project has none of its own", async () => {
     const b = binding();
-    await mailFromEnv({ EMAIL: b, UNISITES_MAIL_FROM: "shop@unisites.ge" })?.(LETTER);
-    expect(b.sent[0]?.from).toBe("shop@unisites.ge");
+    await mailFromEnv({ EMAIL: b, UNISITES_MAIL_FROM: "shop@unisite.ge" })?.(LETTER);
+    expect(b.sent[0]?.from).toBe("shop@unisite.ge");
   });
 
   it("keeps MAIL_FROM's name and takes replies at its address, but sends from Unisites' own", async () => {
     const b = binding();
-    await mailFromEnv({ EMAIL: b, MAIL_FROM: "Shop <hello@shop.ge>", UNISITES_MAIL_FROM: "shop@unisites.ge" })?.(LETTER);
-    expect(b.sent[0]).toMatchObject({ from: { email: "shop@unisites.ge", name: "Shop" }, replyTo: "hello@shop.ge" });
-    await mailFromEnv({ EMAIL: b, MAIL_FROM: "Shop <hello@shop.ge>", MAIL_REPLY_TO: "desk@shop.ge", UNISITES_MAIL_FROM: "shop@unisites.ge" })?.(LETTER);
+    await mailFromEnv({ EMAIL: b, MAIL_FROM: "Shop <hello@shop.ge>", UNISITES_MAIL_FROM: "shop@unisite.ge" })?.(LETTER);
+    expect(b.sent[0]).toMatchObject({ from: { email: "shop@unisite.ge", name: "Shop" }, replyTo: "hello@shop.ge" });
+    await mailFromEnv({ EMAIL: b, MAIL_FROM: "Shop <hello@shop.ge>", MAIL_REPLY_TO: "desk@shop.ge", UNISITES_MAIL_FROM: "shop@unisite.ge" })?.(LETTER);
     expect(b.sent[1]?.replyTo).toBe("desk@shop.ge");
   });
 
   it("gives way to the project's own SMTP or Resend", async () => {
     const b = binding();
-    const own = { EMAIL: b, UNISITES_MAIL_FROM: "shop@unisites.ge" };
+    const own = { EMAIL: b, UNISITES_MAIL_FROM: "shop@unisite.ge" };
     const calls: string[] = [];
     const fetcher = (async (url: string) => (calls.push(url), new Response("{}"))) as unknown as typeof fetch;
     const original = globalThis.fetch;
@@ -56,19 +56,19 @@ describe("Email Service", () => {
   });
 
   it("is none without the binding or Unisites' address", () => {
-    expect(mailFromEnv({ UNISITES_MAIL_FROM: "shop@unisites.ge" })).toBeUndefined();
+    expect(mailFromEnv({ UNISITES_MAIL_FROM: "shop@unisite.ge" })).toBeUndefined();
     expect(mailFromEnv({ EMAIL: binding() })).toBeUndefined();
   });
 
   it("turns passwords on and delivers a reset letter, with no sender set up", async () => {
     const b = binding();
-    const p = project({ mail: mailFromEnv({ EMAIL: b, UNISITES_MAIL_FROM: "shop@unisites.ge" }) });
+    const p = project({ mail: mailFromEnv({ EMAIL: b, UNISITES_MAIL_FROM: "shop@unisite.ge" }) });
     await p.call("/sign-up/email", { email: "ana@example.com", name: "Ana", password: "A-good-password-9" });
     p.forget();
     expect((await p.call("/request-password-reset", { email: "ana@example.com", redirectTo: "/" })).response.status).toBe(200);
     await new Promise((resolve) => setTimeout(resolve, 10));
     const reset = b.sent.find((m) => m.to === "ana@example.com" && /reset|token=/i.test(m.text));
-    expect(reset?.from).toBe("shop@unisites.ge");
+    expect(reset?.from).toBe("shop@unisite.ge");
     const row = p.db.prepare("select value from _base_settings where key = 'capabilities'").get() as { value: string };
     expect(JSON.parse(row.value).passwords).toBe(true);
   });
