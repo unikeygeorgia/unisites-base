@@ -48,6 +48,15 @@ export type RestConfig = {
      * Supabase's service role does (gotrue.isService: the service key). Never from a browser.
      */
     admin?: (request: Request) => boolean | Promise<boolean>;
+    /**
+     * Who a request's token says it is, its signature checked but not yet whether its session still lives, and
+     * that check (gotrue.claims). With it a read runs beside the check instead of after it, one round trip less,
+     * and again signed out when the session is over, so it answers what `auth` first would. Writes wait for `auth`.
+     */
+    claims?: (request: Request) => Promise<{
+        auth: Auth;
+        alive: () => Promise<boolean>;
+    } | null>;
     /** Where the API is; `/rest/v1/` as Supabase has it. */
     prefix?: string;
     /** The project's own functions, for supabase.rpc(name, args). */

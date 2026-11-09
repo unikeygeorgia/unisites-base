@@ -1,10 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 
 import { createData, type Exec, type Filter } from "../src/data.ts";
 import { createGotrue } from "../src/gotrue.ts";
+import { createRest } from "../src/rest.ts";
 import { ORIGIN, project } from "./support/project.ts";
 
 // What a project on a Worker pays per request is round trips to D1 (~90 ms each from a Worker in Tbilisi to D1 in
@@ -161,5 +162,92 @@ describe("GET /auth/v1/user", () => {
     // The session's row goes with its person in a real database; here the session stays, so the person is missing.
     const gone = await s.server.auth.getUser(s.token);
     expect(gone.error?.status === 401 || gone.error?.status === 404).toBe(true);
+  });
+});
+
+describe("a browser's read", () => {
+  const SESSION = /_base_session/;
+  const ROWS = /^SELECT .* FROM "products"/;
+  const EMBED = /^SELECT .* FROM "shops"/;
+  // /rest/v1 with a person's token, through supabase-js, against a database whose statements each take a while:
+  // with claims the read runs beside the session's check; without, after it. The answers are the same.
+  async function shop(withClaims: boolean) {
+    const p = project({ verifyEmailBy: "code", trustedOrigins: [ORIGIN] });
+    p.db.exec(`
+      create table shops (id text primary key, name text);
+      create table products (id text primary key, shop_id text references shops (id), maker_id text references shops (id), owner text, name text);
+      insert into shops values ('s1', 'Nino''s'), ('s2', 'Other');
+    `);
+    const log: { sql: string; start: number; end: number }[] = [];
+    const exec: Exec = async (sql, params) => {
+      const entry = { sql, start: performance.now(), end: Infinity };
+      log.push(entry);
+      await new Promise((r) => setTimeout(r, 10));
+      entry.end = performance.now();
+      return p.db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
+    };
+    const gotrue = createGotrue({ base: p.base, exec, secret: "a-test-secret-that-is-long-enough-123", serviceKey: "service-key-for-the-server-code-only-0123456789", checkLeakedPasswords: false });
+    const data = createData({
+      exec,
+      access: { tables: { shops: { list: "" }, products: { list: "owner = auth.id", create: "owner = auth.id" } } },
+    });
+    const rest = createRest({ data, auth: gotrue.person, admin: gotrue.isService, ...(withClaims ? { claims: gotrue.claims } : {}) });
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const path = new URL(request.url).pathname;
+      if (path.startsWith("/auth/v1/")) return gotrue.handler(request);
+      if (path.startsWith("/rest/v1/")) return rest.handler(request);
+      return p.base.handler(request);
+    };
+    const browser = createClient(ORIGIN, "unisites", { auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false }, global: { fetch: fetcher } });
+    await browser.auth.signUp({ email: "nino@example.test", password: "a long password 123!" });
+    const code = /\b(\d{6})\b/.exec(p.mail.at(-1)?.text ?? "")?.[1] ?? "";
+    const { data: s } = await browser.auth.verifyOtp({ email: "nino@example.test", token: code, type: "signup" });
+    const id = s.session!.user.id;
+    p.db.prepare(`insert into products values ('p1', 's1', 's2', ?, 'paint'), ('p2', 's2', 's1', ?, 'brush'), ('p3', 's1', 's1', 'someone-else', 'theirs')`).run(id, id);
+    // The statements of the next request only.
+    const fresh = () => { log.length = 0; };
+    const first = (re: RegExp) => log.find((e) => re.test(e.sql))!;
+    const all = (re: RegExp) => log.filter((e) => re.test(e.sql));
+    /** The read's first statement, whatever it is (here a table's PRAGMA: this test has no schema cache). */
+    const read = () => log.find((e) => !SESSION.test(e.sql))!;
+    return { p, browser, id, fresh, first, all, read };
+  }
+  const list = (b: SupabaseClient) => b.from("products").select("id, name, shop:shops!shop_id(name), maker:shops!maker_id(name)", { count: "exact" }).order("id");
+
+  it("runs beside the session's check, its embeds side by side, and answers as after it", async () => {
+    const after = await shop(false);
+    const beside = await shop(true);
+    after.fresh();
+    const before = await list(after.browser);
+    // Without claims (0.9.4): the rows only once the session's check is back, and one embed after the other.
+    expect(after.read().start).toBeGreaterThanOrEqual(after.first(SESSION).end);
+    expect(after.first(ROWS).start).toBeGreaterThanOrEqual(after.first(SESSION).end);
+    beside.fresh();
+    const now = await list(beside.browser);
+    expect(now.error).toBeNull();
+    expect(now.data).toEqual(before.data);
+    expect(now.count).toBe(2);
+    expect(now.data).toEqual([
+      { id: "p1", name: "paint", shop: { name: "Nino's" }, maker: { name: "Other" } },
+      { id: "p2", name: "brush", shop: { name: "Other" }, maker: { name: "Nino's" } },
+    ]);
+    // With claims: the read is under way before the check comes back.
+    expect(beside.read().start).toBeLessThan(beside.first(SESSION).end);
+    // The two embeds overlap.
+    const [a, b] = beside.all(EMBED);
+    expect(b!.start).toBeLessThan(a!.end);
+  });
+
+  it("answers signed out once the session is over, and never writes as it", async () => {
+    const s = await shop(true);
+    expect((await s.browser.from("products").select("id").order("id")).data).toEqual([{ id: "p1" }, { id: "p2" }]);
+    s.p.db.prepare(`update "_base_session" set "expiresAt" = ?`).run(new Date(Date.now() - 1000).toISOString());
+    // As signed out: products' rule needs a person, so none; shops' is open to all.
+    expect((await s.browser.from("products").select("id")).data).toEqual([]);
+    expect((await s.browser.from("shops").select("id").order("id")).data).toEqual([{ id: "s1" }, { id: "s2" }]);
+    const write = await s.browser.from("products").insert({ id: "p9", shop_id: "s1", owner: s.id, name: "sneaky" });
+    expect(write.error).not.toBeNull();
+    expect(s.p.db.prepare(`select count(*) as n from products where id = 'p9'`).get()).toEqual({ n: 0 });
   });
 });

@@ -614,6 +614,14 @@ export function createGotrue(config) {
             const claims = await verify(bearer(request));
             return claims ? { id: claims.sub, email: claims.email, role: "authenticated" } : null;
         },
+        /**
+         * Who a request's token says it is (person's Auth), its signature checked without the database, and the
+         * check that its session still lives, for createRest's reads to run beside (RestConfig.claims).
+         */
+        claims: async (request) => {
+            const claims = await signed(bearer(request));
+            return claims ? { auth: { id: claims.sub, email: claims.email, role: "authenticated" }, alive: () => alive(claims.session_id) } : null;
+        },
         /** Whether a request carries the service key (the server's own code: admin()). */
         isService: (request) => isServiceKey(bearer(request)),
     };

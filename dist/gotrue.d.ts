@@ -41,6 +41,14 @@ export declare function createGotrue(config: GotrueConfig): {
     alive: (sessionId: unknown) => Promise<boolean>;
     /** The person a request's access token is for, as data's Auth: for createRest and Realtime. */
     person: (request: Request) => Promise<Auth | null>;
+    /**
+     * Who a request's token says it is (person's Auth), its signature checked without the database, and the
+     * check that its session still lives, for createRest's reads to run beside (RestConfig.claims).
+     */
+    claims: (request: Request) => Promise<{
+        auth: Auth;
+        alive: () => Promise<boolean>;
+    } | null>;
     /** Whether a request carries the service key (the server's own code: admin()). */
     isService: (request: Request) => boolean;
 };

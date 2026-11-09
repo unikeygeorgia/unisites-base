@@ -359,6 +359,39 @@ export function createRest(config) {
             return fail(e);
         }
     }
+    /** GET (and HEAD) on a table: the rows the select, filters, order and range ask for, as `db` may see them. */
+    async function read(request, url, table, method, db) {
+        if (!isName(table))
+            throw new AccessError("unknown_table", table);
+        const desc = await db.describe(table);
+        const p = prefer(request);
+        const single = /application\/vnd\.pgrst\.object\+json/i.test(request.headers.get("accept") ?? "");
+        const counted = ["exact", "planned", "estimated"].includes(p.get("count") ?? "");
+        const select = parseSelect(url.searchParams.get("select") ?? "*");
+        if (embeds(select) > MAX_EMBEDS)
+            throw unsupported(`more than ${MAX_EMBEDS} embeds in one select`);
+        budget.set(select, config.data.maxRows * EMBED_ROWS);
+        const q = parseQuery(desc, url.searchParams);
+        const range = /^(\d{1,9})-(\d{0,9})$/.exec(request.headers.get("range") ?? "");
+        const offset = q.offset ?? (range ? Number(range[1]) : 0);
+        const limit = q.limit ?? (range && range[2] ? Number(range[2]) - Number(range[1]) + 1 : undefined);
+        // The count beside the rows: neither needs the other.
+        const [rows, total] = await Promise.all([
+            (async () => db.list(table, {
+                columns: await needed(db, table, desc, select),
+                where: q.where,
+                order: q.order,
+                limit: single && limit === undefined ? 2 : limit,
+                offset,
+            }))(),
+            counted ? db.count(table, q.where) : undefined,
+        ]);
+        const shaped = await shape(db, table, desc, select, rows, 0);
+        const headers = { "content-range": contentRange(offset, shaped.length, total) };
+        if (single)
+            return object(shaped, headers, method === "HEAD");
+        return json(200, shaped, headers, method === "HEAD");
+    }
     async function handle(request) {
         const url = new URL(request.url);
         if (!url.pathname.startsWith(prefix))
@@ -387,10 +420,29 @@ export function createRest(config) {
                 throw new RestError(406, "PGRST106", `only the public schema: ${p}`);
         }
         const asAdmin = config.admin ? await config.admin(request) : false;
+        const reading = method === "GET" || method === "HEAD";
+        // A read with a token runs as the token says beside the check that its session lives, and again signed out
+        // when it does not: what it answers is what it answered when the check came first.
+        if (reading && !asAdmin && config.claims && !path.startsWith("rpc/")) {
+            const early = await config.claims(request);
+            if (early) {
+                const [first, live] = await Promise.all([
+                    read(request, url, path, method, config.data.as(early.auth)).then((response) => ({ response }), (error) => ({ error })),
+                    early.alive(),
+                ]);
+                if (!live)
+                    return read(request, url, path, method, config.data.as(null));
+                if ("error" in first)
+                    throw first.error;
+                return first.response;
+            }
+        }
         const auth = asAdmin ? null : await config.auth(request);
         const db = asAdmin ? config.data.admin() : config.data.as(auth);
         if (path.startsWith("rpc/"))
             return rpc(request, url, path.slice(4), db, auth, asAdmin);
+        if (reading)
+            return read(request, url, path, method, db);
         const table = path;
         if (!isName(table))
             throw new AccessError("unknown_table", table);
@@ -403,24 +455,6 @@ export function createRest(config) {
             throw unsupported(`more than ${MAX_EMBEDS} embeds in one select`);
         budget.set(select, config.data.maxRows * EMBED_ROWS);
         const q = parseQuery(desc, url.searchParams);
-        if (method === "GET" || method === "HEAD") {
-            const range = /^(\d{1,9})-(\d{0,9})$/.exec(request.headers.get("range") ?? "");
-            const offset = q.offset ?? (range ? Number(range[1]) : 0);
-            const limit = q.limit ?? (range && range[2] ? Number(range[2]) - Number(range[1]) + 1 : undefined);
-            const rows = await db.list(table, {
-                columns: await needed(db, table, desc, select),
-                where: q.where,
-                order: q.order,
-                limit: single && limit === undefined ? 2 : limit,
-                offset,
-            });
-            const shaped = await shape(db, table, desc, select, rows, 0);
-            const total = counted ? await db.count(table, q.where) : undefined;
-            const headers = { "content-range": contentRange(offset, shaped.length, total) };
-            if (single)
-                return object(shaped, headers, method === "HEAD");
-            return json(200, shaped, headers, method === "HEAD");
-        }
         const representation = p.get("return") === "representation";
         if (method === "POST") {
             let input = await body(request);
@@ -558,9 +592,11 @@ export function createRest(config) {
     // Rows as the select asks: its order, its aliases, the embeds, and Postgres' values.
     async function shape(db, table, desc, select, rows, depth, root = select) {
         const embedded = new Map();
-        for (const item of select) {
+        // Each embed is a query of its own; they go side by side, not one after the other (a round trip each to D1
+        // from a Worker: Unichat's inbox embeds a conversation's contact and channel, 2026-11-09).
+        await Promise.all(select.map(async (item) => {
             if (item.k !== "embed")
-                continue;
+                return;
             const r = await relation(db, table, desc, item);
             const values = [...new Set(rows.map((row) => row[r.own]).filter((v) => v !== null && v !== undefined))];
             const found = new Map();
@@ -588,7 +624,7 @@ export function createRest(config) {
                 });
             }
             embedded.set(item, found);
-        }
+        }));
         const value = valueOf(desc);
         return rows.map((row) => {
             const out = {};
