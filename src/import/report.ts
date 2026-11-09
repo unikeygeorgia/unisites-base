@@ -226,7 +226,8 @@ export function buildReport(catalog: Catalog, options: ReportOptions = {}): Repo
   }
   if (catalog.buckets.length) access.buckets = {};
   for (const b of catalog.buckets) {
-    access.buckets![b.id] = { public: b.public, fileSizeLimit: b.size_limit, allowedMimeTypes: b.mime_types };
+    // Supabase checks no type for an empty list; unisites-base/storage would take none.
+    access.buckets![b.id] = { public: b.public, fileSizeLimit: b.size_limit, allowedMimeTypes: b.mime_types?.length ? b.mime_types : null };
     add("storage", `bucket ${b.id}`, "auto", `${b.public ? "public" : "private"}, ${b.objects} files, ${fmtBytes(b.bytes)}: R2 (unisites-base/storage), files moved with import-supabase --files`);
   }
   const a = catalog.auth;

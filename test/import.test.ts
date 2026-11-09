@@ -55,6 +55,16 @@ describe("the catalog", () => {
     expect(catalog.buckets.map((b) => [b.id, b.objects, b.bytes])).toEqual([["avatars", 1, 1200], ["media", 0, 0]]);
     expect(catalog.auth).toMatchObject({ users: 3, passwords: 2, bcrypt: 2, banned: 1, providers: { email: 1, phone: 1, google: 1 } });
   });
+
+  it("keeps each bucket's limits, and an empty list of types (any type, in Supabase) as null", () => {
+    const docs = { id: "docs", public: false, size_limit: null, mime_types: [], objects: 0, bytes: 0 };
+    const { access } = buildReport({ ...catalog, buckets: [...catalog.buckets, docs] });
+    expect((access as { buckets?: unknown }).buckets).toEqual({
+      avatars: { public: true, fileSizeLimit: 5242880, allowedMimeTypes: ["image/png", "image/jpeg"] },
+      media: { public: false, fileSizeLimit: null, allowedMimeTypes: null },
+      docs: { public: false, fileSizeLimit: null, allowedMimeTypes: null },
+    });
+  });
 });
 
 describe("rules", () => {

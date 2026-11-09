@@ -29,7 +29,11 @@ export type Bucket = {
   public?: boolean;
   /** Bytes a file may have. */
   fileSizeLimit?: number | null;
-  /** Types a file may be: "image/png", "image/*". */
+  /**
+   * Types a file may be: "image/png", "image/*" (any case). null, or leaving it out, takes any type;
+   * [] takes none (Supabase takes any for an empty list: the report writes null for it). Whatever
+   * the list, a file declares one type/subtype, or it is refused.
+   */
   allowedMimeTypes?: string[] | null;
 };
 
@@ -76,9 +80,25 @@ function folders(name: string): { folder1: string | null; folder2: string | null
   return { folder1: parts[0] ?? null, folder2: parts[1] ?? null, folder3: parts[2] ?? null };
 }
 
+/**
+ * A declared type as a file is kept and served: one `type/subtype` (RFC 6838's names), lowercase,
+ * its parameters dropped, so what a bucket's list checks is what is served. Nothing declared is
+ * application/octet-stream. Anything else is null: a second type after a comma or a space
+ * ("audio/webm, text/html" would pass "audio/*" by its prefix), a wildcard, a missing subtype.
+ */
+function mediaType(declared: string | null | undefined): string | null {
+  if (!declared?.trim()) return "application/octet-stream";
+  const type = declared.split(";")[0]!.trim();
+  return /^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$/i.test(type) ? type.toLowerCase() : null;
+}
+
+/** null (or no list) takes any type; a list takes its types and `type/*` families, so [] takes none. */
 function mimeAllowed(type: string, allowed: string[] | null | undefined): boolean {
-  if (!allowed?.length) return true;
-  return allowed.some((a) => a === type || (a.endsWith("/*") && type.startsWith(a.slice(0, -1))));
+  if (allowed == null) return true;
+  return allowed.some((entry) => {
+    const a = entry.trim().toLowerCase();
+    return a === type || (a.endsWith("/*") && type.startsWith(a.slice(0, -1)));
+  });
 }
 
 export function createStorage(config: StorageConfig) {
@@ -151,7 +171,7 @@ export function createStorage(config: StorageConfig) {
     const declared = Number(request.headers.get("content-length") ?? 0);
     if (declared > limit + 64 * 1024) throw new StorageError(413, "Payload too large", "The object exceeded the maximum allowed size");
     let bytes: Uint8Array;
-    let type: string;
+    let type: string | null;
     let cache: string;
     if (/^multipart\/form-data/i.test(request.headers.get("content-type") ?? "")) {
       // Read by hand: supabase-js sends the file as a part named "", which the Workers runtime's
@@ -160,17 +180,19 @@ export function createStorage(config: StorageConfig) {
       const file = form.find((p) => p.filename !== null || p.type !== null);
       if (!file) throw new StorageError(400, "InvalidRequest", "no file");
       bytes = file.body;
-      type = file.type || "application/octet-stream";
+      type = mediaType(file.type);
       const c = form.find((p) => p.name === "cacheControl" && p.filename === null);
       const seconds = c ? new TextDecoder().decode(c.body).trim() : "";
       cache = /^\d{1,9}$/.test(seconds) ? `max-age=${seconds}` : "max-age=3600";
     } else {
+      // Two Content-Type headers come as one, "<first>, <second>": refused below.
+      type = mediaType(request.headers.get("content-type"));
       bytes = new Uint8Array(await request.arrayBuffer());
-      type = (request.headers.get("content-type") ?? "application/octet-stream").split(";")[0]!.trim() || "application/octet-stream";
       const c = /^max-age=(\d{1,9})$/.exec(request.headers.get("cache-control") ?? "");
       cache = c ? `max-age=${c[1]}` : "max-age=3600";
     }
     if (bytes.byteLength > limit) throw new StorageError(413, "Payload too large", "The object exceeded the maximum allowed size");
+    if (!type) throw new StorageError(415, "invalid_mime_type", "mime type must be one type/subtype");
     if (!mimeAllowed(type, bucket.allowedMimeTypes)) throw new StorageError(415, "invalid_mime_type", `mime type ${type} is not supported`);
     return { bytes, type, cache };
   }

@@ -287,6 +287,12 @@ if (url.pathname.startsWith("/storage/v1/"))
   are the path's first folders (Supabase's `storage.foldername(name)[n]`), `owner` is who added it.
 - `buckets` (access.json's `buckets`, from the report): which are public, and each one's size and
   types. A signed URL is an HMAC of the path and its end, given only for files the person may read.
+- `allowedMimeTypes` names types (`image/png`) and families (`image/*`). `null`, or leaving it out,
+  takes any type; `[]` takes none. (Supabase takes any type for an empty list, so the report writes
+  `null` for one.)
+- A file is kept and served with the type it declares, as one lowercase `type/subtype` without its
+  parameters. Anything else (two types, `audio/webm, text/html`; a wildcard; no subtype) is refused
+  with 415, in every bucket.
 - Files are served with `Content-Security-Policy: sandbox` and `nosniff`; a path that climbs (`..`)
   or hides (control characters, `\`) is refused.
 

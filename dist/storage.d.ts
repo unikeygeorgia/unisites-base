@@ -38,7 +38,11 @@ export type Bucket = {
     public?: boolean;
     /** Bytes a file may have. */
     fileSizeLimit?: number | null;
-    /** Types a file may be: "image/png", "image/*". */
+    /**
+     * Types a file may be: "image/png", "image/*" (any case). null, or leaving it out, takes any type;
+     * [] takes none (Supabase takes any for an empty list: the report writes null for it). Whatever
+     * the list, a file declares one type/subtype, or it is refused.
+     */
     allowedMimeTypes?: string[] | null;
 };
 export type StorageConfig = {
