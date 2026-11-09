@@ -93,6 +93,9 @@ describe("GET /auth/v1/user", () => {
     const p = project({ verifyEmailBy: "code", trustedOrigins: [ORIGIN] });
     let inFlight = 0;
     let most = 0;
+    let started = 0;
+    // base.auth() makes (or reuses) better-auth: counted, to see whether a getUser needs it.
+    const base = { ...p.base, auth: () => (started++, p.base.auth()) };
     const exec: Exec = async (sql, params) => {
       inFlight++;
       most = Math.max(most, inFlight);
@@ -100,7 +103,7 @@ describe("GET /auth/v1/user", () => {
       inFlight--;
       return p.db.prepare(sql).all(...(params as never[])) as Record<string, unknown>[];
     };
-    const gotrue = createGotrue({ base: p.base, exec, secret: "a-test-secret-that-is-long-enough-123", serviceKey: SERVICE_KEY, checkLeakedPasswords: false });
+    const gotrue = createGotrue({ base, exec, secret: "a-test-secret-that-is-long-enough-123", serviceKey: SERVICE_KEY, checkLeakedPasswords: false });
     const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       return new URL(request.url).pathname.startsWith("/auth/v1/") ? gotrue.handler(request) : p.base.handler(request);
@@ -111,7 +114,7 @@ describe("GET /auth/v1/user", () => {
     const code = /\b(\d{6})\b/.exec(p.mail.at(-1)?.text ?? "")?.[1] ?? "";
     const { data } = await browser.auth.verifyOtp({ email: "nino@example.test", token: code, type: "signup" });
     const token = data.session!.access_token;
-    return { p, server, browser, token, reset: () => { most = 0; }, most: () => most };
+    return { p, server, browser, token, reset: () => { most = 0; started = 0; }, most: () => most, started: () => started };
   }
 
   it("reads the session, the person and what they keep side by side, and answers as before", async () => {
@@ -120,6 +123,8 @@ describe("GET /auth/v1/user", () => {
     const { data, error } = await s.server.auth.getUser(s.token);
     // All four together: the session, the person, their accounts, their metadata (0.9.1: one at a time).
     expect(s.most()).toBe(4);
+    // And without better-auth: no instance made for it, no sqlite_master read by one.
+    expect(s.started()).toBe(0);
     expect(error).toBeNull();
     // The same person as auth.admin reads them through better-auth.
     expect(data.user).toEqual((await s.server.auth.admin.getUserById(data.user!.id)).data.user);

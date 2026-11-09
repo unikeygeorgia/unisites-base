@@ -330,6 +330,9 @@ export function createGotrue(config) {
         const url = new URL(request.url);
         const path = url.pathname.slice(prefix.length).replace(/\/$/, "");
         const method = request.method.toUpperCase();
+        // A server's getUser, on every request it serves: answered without better-auth, so no instance is made for it.
+        if (path === "user" && method === "GET")
+            return answer(200, await currentUser(request));
         const ctx = await context();
         if (path === "settings" && method === "GET")
             return answer(200, { external: { email: true, google: true, phone: false }, disable_signup: false, mailer_autoconfirm: false });
@@ -472,8 +475,6 @@ export function createGotrue(config) {
                 return Response.redirect(`${to.split("#")[0]}#error=access_denied&error_description=${encodeURIComponent(url.searchParams.get("error") ?? "sign-in failed")}`, 303);
             return new Response(null, { status: 303, headers: { location: hashOf(to, await session(s.session.token), "signup"), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
         }
-        if (path === "user" && method === "GET")
-            return answer(200, await currentUser(request));
         if (path === "user" && method === "PUT") {
             const u = await signedIn(request);
             const b = await body(request);
