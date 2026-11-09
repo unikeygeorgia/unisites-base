@@ -101,6 +101,18 @@ function mimeAllowed(type: string, allowed: string[] | null | undefined): boolea
   });
 }
 
+/**
+ * Whether a browser would open a type as a page of its own: HTML, XHTML, SVG, any XML ("+xml"),
+ * XSL, multipart (a part may be a page). Each type of a comma's list counts, as a browser reads the
+ * last one it can: "audio/webm, text/html", kept before 0.9.6, opened as HTML.
+ */
+function opensAsPage(contentType: string): boolean {
+  return contentType.split(",").some((part) => {
+    const t = part.split(";")[0]!.trim().toLowerCase();
+    return t === "text/html" || t === "text/xsl" || /^[^/\s]+\/(?:[^/\s]+\+)?xml$/.test(t) || t.startsWith("multipart/");
+  });
+}
+
 export function createStorage(config: StorageConfig) {
   if (!config.secret || config.secret.length < 32) throw new Error("unisites-base: the secret must be at least 32 characters");
   const prefix = config.prefix ?? "/storage/v1/";
@@ -153,13 +165,16 @@ export function createStorage(config: StorageConfig) {
   async function serve(bucket: string, name: string, request: Request): Promise<Response> {
     const object = await config.r2.get(`${bucket}/${name}`);
     if (!object) throw NOT_FOUND();
+    const type = object.httpMetadata?.contentType ?? "application/octet-stream";
     const headers = new Headers({
-      "content-type": object.httpMetadata?.contentType ?? "application/octet-stream",
+      "content-type": type,
       "cache-control": object.httpMetadata?.cacheControl ?? "no-cache",
       "x-content-type-options": "nosniff",
       // A file never runs as a page of the app's own origin.
       "content-security-policy": "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
     });
+    // Nor shows as one: opened, it downloads. <img>, <link rel=icon>, fetch() and download() ignore this.
+    if (opensAsPage(type)) headers.set("content-disposition", "attachment");
     if (object.httpEtag) headers.set("etag", object.httpEtag);
     headers.set("content-length", String(object.size));
     return new Response(request.method === "HEAD" ? null : object.body, { status: 200, headers });

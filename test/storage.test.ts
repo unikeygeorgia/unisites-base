@@ -254,6 +254,47 @@ describe("serving a file", () => {
       expectSandboxed(await fetcher(`${ORIGIN}/storage/v1/object/private/t/${T}/doc.pdf`, { method, headers: as }), "application/pdf");
     }
   });
+
+  // A second layer: a file that would open as a page (HTML, XHTML, SVG, any XML, XSL, multipart)
+  // downloads when opened, keeping its type; <img>, <link rel=icon>, fetch() and download() ignore
+  // Content-Disposition, so logos and the app's own reads are unchanged.
+  it("makes a file that would open as a page download instead, however it is read, and opens the rest", async () => {
+    const { client, fetcher, bytes, db, png } = app();
+    const pages: Record<string, string> = {
+      "a.html": "text/html",
+      "a.xhtml": "application/xhtml+xml",
+      "a.svg": "image/svg+xml",
+      "a.xml": "text/xml",
+      "b.xml": "application/xml",
+      "a.rss": "application/rss+xml",
+      "a.xsl": "text/xsl",
+      "a.mixed": "multipart/x-mixed-replace",
+    };
+    const others: Record<string, string> = { "a.png": "image/png", "a.pdf": "application/pdf", "a.webm": "audio/webm", "a.txt": "text/plain", "a.json": "application/json", "a.bin": "application/octet-stream" };
+    for (const [name, type] of Object.entries({ ...pages, ...others })) {
+      expect((await client("ana").from("private").upload(`t/${T}/${name}`, new File(["<p>x</p>"], name, { type }))).error).toBeNull();
+    }
+    // A file kept before 0.9.6 with two types: a browser reads the last one it can, text/html.
+    bytes.set(`private/t/${T}/old.webm`, { body: new TextEncoder().encode("<p>old</p>"), type: "audio/webm, text/html" });
+    db.prepare("insert into storage_objects (id, bucket_id, name, folder1, folder2, size, mime_type, created_at, updated_at) values ('old', 'private', ?, 't', ?, 10, 'audio/webm, text/html', '', '')").run(`t/${T}/old.webm`, T);
+    const as = { "x-test-user": "beka" };
+    const read = (name: string, method = "GET") => fetcher(`${ORIGIN}/storage/v1/object/authenticated/private/t/${T}/${name}`, { method, headers: as });
+    for (const name of [...Object.keys(pages), "old.webm"]) {
+      for (const method of ["GET", "HEAD"]) {
+        const res = await read(name, method);
+        expect([name, method, res.headers.get("content-disposition"), res.headers.get("content-type")]).toEqual([name, method, "attachment", pages[name] ?? "audio/webm, text/html"]);
+      }
+    }
+    for (const name of Object.keys(others)) expect([name, (await read(name)).headers.get("content-disposition")]).toEqual([name, null]);
+    // The same on a signed and a public read.
+    const signedUrl = (await client("beka").from("private").createSignedUrl(`t/${T}/a.html`, 60)).data!.signedUrl;
+    expect((await fetcher(signedUrl)).headers.get("content-disposition")).toBe("attachment");
+    expect((await client("ana").from("media").upload(`t/${T}/logo.svg`, new File(["<svg/>"], "logo.svg", { type: "image/svg+xml" }))).error).toBeNull();
+    expect((await client("ana").from("media").upload(`t/${T}/logo.png`, png())).error).toBeNull();
+    const open = (name: string) => fetcher(client().from("media").getPublicUrl(`t/${T}/${name}`).data.publicUrl);
+    expect((await open("logo.svg")).headers.get("content-disposition")).toBe("attachment");
+    expect((await open("logo.png")).headers.get("content-disposition")).toBeNull();
+  });
 });
 
 describe("multipart (supabase-js's upload body)", () => {

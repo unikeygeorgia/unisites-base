@@ -295,6 +295,9 @@ if (url.pathname.startsWith("/storage/v1/"))
   with 415, in every bucket.
 - Files are served with `Content-Security-Policy: sandbox` and `nosniff`; a path that climbs (`..`)
   or hides (control characters, `\`) is refused.
+- A file a browser would open as a page (HTML, XHTML, SVG, any XML, XSL, multipart) is also served
+  with `Content-Disposition: attachment`: opened, it downloads. `<img>`, `<link rel=icon>`, `fetch()`
+  and `download()` ignore it, so an SVG logo still shows.
 
 ### Moving from Supabase: the report
 
