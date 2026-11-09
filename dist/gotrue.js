@@ -39,6 +39,11 @@ export function createGotrue(config) {
     }
     /** A token's claims, if it is ours, not expired, and its session still lives. */
     async function verify(token) {
+        const claims = await signed(token);
+        return claims && (await alive(claims.session_id)) ? claims : null;
+    }
+    /** A token's claims, if it is ours and not expired: its signature alone, without the database. */
+    async function signed(token) {
         if (!token)
             return null;
         const parts = token.split(".");
@@ -59,7 +64,7 @@ export function createGotrue(config) {
         }
         if (typeof claims.exp !== "number" || claims.exp * 1000 <= Date.now())
             return null;
-        return (await alive(claims.session_id)) ? claims : null;
+        return claims;
     }
     /** Whether a session still lives and its person is not blocked (Unisites blocks with banned = 1 alone). */
     async function alive(sessionId) {
@@ -101,12 +106,11 @@ export function createGotrue(config) {
             throw new GotrueError(400, "validation_failed", "user_metadata is too large");
         await config.exec(`insert into "_base_user_metadata" ("userId", "data", "updatedAt") values (?, ?, ?) on conflict ("userId") do update set "data" = excluded."data", "updatedAt" = excluded."updatedAt"`, [userId, text, new Date().toISOString()]);
     }
-    /** Supabase's user object. */
-    async function userJson(u) {
-        const ctx = await context();
-        const accounts = await ctx.internalAdapter.findAccounts(u.id);
+    /** Supabase's user object; its accounts and metadata read side by side, unless the caller read them already. */
+    async function userJson(u, read) {
+        const ctx = read ? null : await context();
+        const [accounts, meta] = read ? [read.accounts, read.meta] : await Promise.all([ctx.internalAdapter.findAccounts(u.id), metadataOf(u.id)]);
         const providers = [...new Set(accounts.map((a) => (a.providerId === "credential" ? "email" : a.providerId)))];
-        const meta = await metadataOf(u.id);
         const verified = u.emailVerified === true || u.emailVerified === 1;
         const placeholder = u.email.endsWith("@phone.invalid");
         return {
@@ -230,6 +234,30 @@ export function createGotrue(config) {
     }
     const captchaOf = (b) => b.gotrue_meta_security?.captcha_token ?? undefined;
     const hashOf = (to, s, type) => `${to.split("#")[0]}#${new URLSearchParams({ access_token: String(s.access_token), expires_at: String(s.expires_at), expires_in: String(s.expires_in), refresh_token: String(s.refresh_token), token_type: "bearer", type })}`;
+    /**
+     * GET /user, which a project's server asks on every request (supabase-js auth.getUser): the session, the person,
+     * their accounts and their metadata read side by side, one round trip to the database instead of four. The
+     * signature is checked first, so nothing is read for a token that is not ours; a session that is over still
+     * answers 401 and a person who is gone 404, as before.
+     */
+    async function currentUser(request) {
+        const claims = await signed(bearer(request));
+        if (!claims)
+            throw new GotrueError(401, "bad_jwt", "invalid JWT: unable to parse or verify signature");
+        const id = String(claims.sub);
+        const ctx = await context();
+        const [live, u, accounts, meta] = await Promise.all([
+            alive(claims.session_id),
+            ctx.internalAdapter.findUserById(id),
+            ctx.internalAdapter.findAccounts(id),
+            metadataOf(id),
+        ]);
+        if (!live)
+            throw new GotrueError(401, "bad_jwt", "invalid JWT: unable to parse or verify signature");
+        if (!u)
+            throw new GotrueError(404, "user_not_found", "User not found");
+        return userJson(u, { accounts, meta });
+    }
     /** The person a request's access token is for. */
     async function signedIn(request) {
         const claims = await verify(bearer(request));
@@ -441,7 +469,7 @@ export function createGotrue(config) {
             return new Response(null, { status: 303, headers: { location: hashOf(to, await session(s.session.token), "signup"), "cache-control": "no-store", "referrer-policy": "no-referrer" } });
         }
         if (path === "user" && method === "GET")
-            return answer(200, await userJson(await signedIn(request)));
+            return answer(200, await currentUser(request));
         if (path === "user" && method === "PUT") {
             const u = await signedIn(request);
             const b = await body(request);
@@ -504,7 +532,7 @@ export function createGotrue(config) {
             const page = Math.max(1, Number(url.searchParams.get("page") ?? 1) || 1);
             const per = Math.min(1000, Math.max(1, Number(url.searchParams.get("per_page") ?? 50) || 50));
             const users = (await ctx.internalAdapter.listUsers(per, (page - 1) * per));
-            return answer(200, { users: await Promise.all(users.map(userJson)), aud: "authenticated" });
+            return answer(200, { users: await Promise.all(users.map((u) => userJson(u))), aud: "authenticated" });
         }
         if (path === "admin/users" && method === "POST") {
             const b = await body(request);

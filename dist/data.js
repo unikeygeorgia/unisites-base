@@ -381,6 +381,13 @@ export function createData(config) {
         function and(...parts) {
             return { sql: parts.map((p) => `coalesce(${p.sql}, 0)`).join(" AND "), params: parts.flatMap((p) => p.params) };
         }
+        // A statement's WHERE: its parts as they are, since a WHERE drops a row whose condition is NULL as
+        // it drops one whose condition is 0. Wrapped in coalesce() a filter on a column is an expression
+        // SQLite cannot look up in an index, and every list, get, count, update and delete read the whole
+        // table: Unichat's chat page read all 47,265 messages of every space for its two (2026-11-09).
+        function where(...parts) {
+            return { sql: parts.map((p) => `(${p.sql})`).join(" AND "), params: parts.flatMap((p) => p.params) };
+        }
         function selectList(name, cols) {
             return cols.map((c) => `${quote(name)}.${quote(c)}`).join(", ");
         }
@@ -521,7 +528,7 @@ export function createData(config) {
                 const t = await table(name);
                 const cols = query.columns?.length ? query.columns : visible(t, rules);
                 columnsFor(name, t, rules, cols, "read");
-                const where = and(whereSql(name, t, rules, query.where), await ruleSql(name, rules, "list", fromTable(name)));
+                const where_ = where(whereSql(name, t, rules, query.where), await ruleSql(name, rules, "list", fromTable(name)));
                 const order = (query.order ?? []).map((o) => {
                     columnsFor(name, t, rules, [o.column], "read");
                     return `${quote(name)}.${quote(o.column)} ${o.ascending === false ? "DESC" : "ASC"}${o.nulls ? ` NULLS ${o.nulls === "first" ? "FIRST" : "LAST"}` : ""}`;
@@ -530,7 +537,7 @@ export function createData(config) {
                 const offset = query.offset ?? 0;
                 if (!Number.isInteger(offset) || offset < 0)
                     throw new AccessError("bad_value", "offset");
-                return exec(`SELECT ${selectList(name, cols)} FROM ${quote(name)} WHERE ${where.sql}${order.length ? ` ORDER BY ${order.join(", ")}` : ""} LIMIT ? OFFSET ?`, [...where.params, limit, offset]);
+                return exec(`SELECT ${selectList(name, cols)} FROM ${quote(name)} WHERE ${where_.sql}${order.length ? ` ORDER BY ${order.join(", ")}` : ""} LIMIT ? OFFSET ?`, [...where_.params, limit, offset]);
             },
             async get(name, key, cols) {
                 const rules = rulesOf(name);
@@ -539,16 +546,16 @@ export function createData(config) {
                     throw new AccessError("bad_value", `${name} has no single key`);
                 const pick = cols?.length ? cols : visible(t, rules);
                 columnsFor(name, t, rules, pick, "read");
-                const where = and({ sql: `${quote(name)}.${quote(t.key[0])} = ?`, params: [bind(key)] }, await ruleSql(name, rules, "view", fromTable(name)));
-                const rows = await exec(`SELECT ${selectList(name, pick)} FROM ${quote(name)} WHERE ${where.sql} LIMIT 1`, where.params);
+                const byKey = where({ sql: `${quote(name)}.${quote(t.key[0])} = ?`, params: [bind(key)] }, await ruleSql(name, rules, "view", fromTable(name)));
+                const rows = await exec(`SELECT ${selectList(name, pick)} FROM ${quote(name)} WHERE ${byKey.sql} LIMIT 1`, byKey.params);
                 return rows[0] ?? null;
             },
             create: (name, input, options = {}) => insert(name, input, options),
             upsert: (name, input, options = {}) => insert(name, input, options, options),
-            async count(name, where) {
+            async count(name, filters) {
                 const rules = rulesOf(name);
                 const t = await table(name);
-                const cond = and(whereSql(name, t, rules, where), await ruleSql(name, rules, "list", fromTable(name)));
+                const cond = where(whereSql(name, t, rules, filters), await ruleSql(name, rules, "list", fromTable(name)));
                 const rows = await exec(`SELECT count(*) AS n FROM ${quote(name)} WHERE ${cond.sql}`, cond.params);
                 return Number(rows[0]?.n ?? 0);
             },
@@ -571,10 +578,10 @@ export function createData(config) {
                     foreignKeys,
                 };
             },
-            async update(name, where, patch, options = {}) {
+            async update(name, filters, patch, options = {}) {
                 const rules = rulesOf(name);
                 const t = await table(name);
-                if (!admin && !narrows(where))
+                if (!admin && !narrows(filters))
                     throw new AccessError("filter_required", `update on ${name}`);
                 if (patch === null || typeof patch !== "object" || Array.isArray(patch))
                     throw new AccessError("bad_value", "a patch is an object");
@@ -585,7 +592,7 @@ export function createData(config) {
                 const next = new Map(cols.map((c) => [c, stored(t, c, patch[c])]));
                 const fromNew = (c) => (next.has(c) ? { sql: "?", params: [next.get(c)] } : fromTable(name)(c));
                 const parts = [
-                    whereSql(name, t, rules, where),
+                    whereSql(name, t, rules, filters),
                     await ruleSql(name, rules, "list", fromTable(name)),
                     await ruleSql(name, rules, "update", fromTable(name)),
                     await ruleSql(name, rules, "updateCheck", fromNew),
@@ -593,34 +600,34 @@ export function createData(config) {
                 if (options.returning)
                     parts.push(await ruleSql(name, rules, "list", fromNew));
                 if (options.one)
-                    parts.push(moreThanOne(name, t, and(...parts)));
-                const cond = and(...parts);
+                    parts.push(moreThanOne(name, t, where(...parts)));
+                const cond = where(...parts);
                 const back = returned(t, rules, options.returning);
                 const out = await exec(`UPDATE OR ABORT ${quote(name)} SET ${cols.map((c) => `${quote(c)} = ?`).join(", ")} WHERE ${cond.sql} RETURNING ${back.sql}`, [...cols.map((c) => next.get(c)), ...cond.params]);
                 const at = new Date().toISOString();
                 await emit(out.map((r) => ({ table: name, type: "UPDATE", record: r, old: pick(r, t.key.filter((k) => k !== "rowid")), at })));
                 return { count: out.length, ...(options.returning ? { rows: out.map((r) => pick(r, back.cols)) } : {}) };
             },
-            async delete(name, where, options = {}) {
+            async delete(name, filters, options = {}) {
                 const rules = rulesOf(name);
                 const t = await table(name);
-                if (!admin && !narrows(where))
+                if (!admin && !narrows(filters))
                     throw new AccessError("filter_required", `delete on ${name}`);
                 const parts = [
-                    whereSql(name, t, rules, where),
+                    whereSql(name, t, rules, filters),
                     await ruleSql(name, rules, "list", fromTable(name)),
                     await ruleSql(name, rules, "delete", fromTable(name)),
                 ];
                 if (options.one)
-                    parts.push(moreThanOne(name, t, and(...parts)));
-                const cond = and(...parts);
+                    parts.push(moreThanOne(name, t, where(...parts)));
+                const cond = where(...parts);
                 const back = returned(t, rules, options.returning);
                 const out = await exec(`DELETE FROM ${quote(name)} WHERE ${cond.sql} RETURNING ${back.sql}`, cond.params);
                 const at = new Date().toISOString();
                 await emit(out.map((r) => ({ table: name, type: "DELETE", record: null, old: r, at })));
                 return { count: out.length, ...(options.returning ? { rows: out.map((r) => pick(r, back.cols)) } : {}) };
             },
-            async sees(name, row, where) {
+            async sees(name, row, filters) {
                 const rules = rulesOf(name);
                 const t = await table(name);
                 if (row === null || typeof row !== "object")
@@ -636,7 +643,7 @@ export function createData(config) {
                         return { sql: "CAST(? AS TEXT)", params: [v] };
                     return { sql: "?", params: [v] };
                 };
-                const cond = and(whereSql(name, t, rules, where, fromRow), await ruleSql(name, rules, "list", fromRow));
+                const cond = where(whereSql(name, t, rules, filters, fromRow), await ruleSql(name, rules, "list", fromRow));
                 const ok = await exec(`SELECT 1 AS ok WHERE ${cond.sql}`, cond.params);
                 return ok.length ? pick(row, visible(t, rules)) : null;
             },

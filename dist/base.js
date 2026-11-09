@@ -345,13 +345,17 @@ async function settingsFor(config, now = Date.now()) {
     const db = config.database;
     const empty = { en: {}, ka: {} };
     try {
-        const switches = await readSwitches(db);
-        const templates = await readTemplates(db);
-        const notices = await readNotices(db);
-        const known = remembered?.capabilities ?? (await readCapabilities(db));
+        // Side by side: one round trip to the database, not five. A Worker reads them again every
+        // SETTINGS_TTL_MS, and the request that finds them old waits for it.
+        const [switches, templates, notices, known, log] = await Promise.all([
+            readSwitches(db),
+            readTemplates(db),
+            readNotices(db),
+            remembered?.capabilities ?? readCapabilities(db),
+            // The log once its table is there (base_0003.sql).
+            hasTable(db, "_base_message_log"),
+        ]);
         const capabilities = await noteCapabilities(db, capabilitiesOf(config), known);
-        // The log once its table is there (base_0003.sql).
-        const log = await hasTable(db, "_base_message_log");
         remembered = { at: now, capabilities, log, notices, switches, templates };
     }
     catch {
