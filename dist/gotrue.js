@@ -245,18 +245,22 @@ export function createGotrue(config) {
         if (!claims)
             throw new GotrueError(401, "bad_jwt", "invalid JWT: unable to parse or verify signature");
         const id = String(claims.sub);
-        const ctx = await context();
-        const [live, u, accounts, meta] = await Promise.all([
+        // Straight from the tables, not through better-auth: its adapter reads the person and then their accounts,
+        // one after the other, and a new instance (one for each request where the Worker makes one) reads
+        // sqlite_master first. userJson takes the rows as SQLite keeps them (ISO text, 0/1), as it takes better-auth's.
+        // The person's row holds no secret (the password and a provider's tokens are the account's, read by name).
+        const [live, users, accounts, meta] = await Promise.all([
             alive(claims.session_id),
-            ctx.internalAdapter.findUserById(id),
-            ctx.internalAdapter.findAccounts(id),
+            config.exec(`select * from "_base_user" where "id" = ?`, [id]),
+            config.exec(`select "accountId", "providerId", "createdAt", "updatedAt" from "_base_account" where "userId" = ?`, [id]),
             metadataOf(id),
         ]);
         if (!live)
             throw new GotrueError(401, "bad_jwt", "invalid JWT: unable to parse or verify signature");
+        const u = users[0];
         if (!u)
             throw new GotrueError(404, "user_not_found", "User not found");
-        return userJson(u, { accounts, meta });
+        return userJson(u, { accounts: accounts, meta });
     }
     /** The person a request's access token is for. */
     async function signedIn(request) {

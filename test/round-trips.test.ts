@@ -118,12 +118,30 @@ describe("GET /auth/v1/user", () => {
     const s = await signedIn();
     s.reset();
     const { data, error } = await s.server.auth.getUser(s.token);
-    // The session's check and the metadata were one after the other: the most under way at once was 1.
-    expect(s.most()).toBeGreaterThanOrEqual(2);
+    // All four together: the session, the person, their accounts, their metadata (0.9.1: one at a time).
+    expect(s.most()).toBe(4);
     expect(error).toBeNull();
-    // The same person as auth.admin reads them, through userJson's own reads.
+    // The same person as auth.admin reads them through better-auth.
     expect(data.user).toEqual((await s.server.auth.admin.getUserById(data.user!.id)).data.user);
     expect(data.user).toMatchObject({ email: "nino@example.test", user_metadata: { full_name: "Nino" }, identities: [expect.objectContaining({ provider: "email" })] });
+  });
+
+  it("answers as better-auth's own reads do for a person with a role, a picture, a phone and a second account", async () => {
+    const s = await signedIn();
+    const id = (await s.server.auth.getUser(s.token)).data.user!.id;
+    s.p.db.prepare(`update "_base_user" set "role" = 'admin', "image" = 'https://img.test/n.png', "phoneNumber" = '+995555123456', "phoneNumberVerified" = 1 where "id" = ?`).run(id);
+    s.p.db
+      .prepare(`insert into "_base_account" ("id", "accountId", "providerId", "userId", "createdAt", "updatedAt") values (?, ?, 'google', ?, ?, ?)`)
+      .run("acc-google", "google-sub-1", id, "2026-11-01T08:00:00.000Z", "2026-11-02T09:30:00.000Z");
+    const mine = (await s.server.auth.getUser(s.token)).data.user!;
+    expect(mine).toEqual((await s.server.auth.admin.getUserById(id)).data.user);
+    expect(mine).toMatchObject({
+      phone: "995555123456",
+      app_metadata: { provider: "email", providers: ["email", "google"], role: "admin" },
+      user_metadata: { full_name: "Nino", avatar_url: "https://img.test/n.png" },
+      identities: [expect.objectContaining({ provider: "email" }), expect.objectContaining({ provider: "google", id: "google-sub-1", created_at: "2026-11-01T08:00:00.000Z" })],
+    });
+    expect(mine.phone_confirmed_at).not.toBeNull();
   });
 
   it("still refuses a token whose session is over, a forged one, and a person who is gone", async () => {
